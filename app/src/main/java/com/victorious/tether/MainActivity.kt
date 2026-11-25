@@ -11,6 +11,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -27,6 +28,7 @@ import com.victorious.tether.data.TetherState
 import com.victorious.tether.service.TetherService
 import com.victorious.tether.ui.MainScreen
 import com.victorious.tether.ui.VictoriousTheme
+import com.victorious.tether.util.UpstreamMonitor
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -44,6 +46,9 @@ class MainActivity : ComponentActivity() {
         var config by remember { mutableStateOf(store.load()) }
         val status by TetherState.status.collectAsState()
         val stats by TetherState.stats.collectAsState()
+        val monitor = remember { UpstreamMonitor(this) }
+        DisposableEffect(monitor) { monitor.start(); onDispose { monitor.stop() } }
+        val upstream by monitor.state.collectAsState()
 
         val permissionLauncher = rememberLauncherForActivityResult(
             ActivityResultContracts.RequestMultiplePermissions()
@@ -58,6 +63,7 @@ class MainActivity : ComponentActivity() {
             config = config,
             status = status,
             stats = stats,
+            upstream = upstream,
             onConfig = { config = it; store.save(it) },
             onToggle = {
                 if (status is Status.Idle || status is Status.Failed) {
