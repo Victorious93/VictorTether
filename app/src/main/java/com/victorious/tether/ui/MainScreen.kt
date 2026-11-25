@@ -55,6 +55,8 @@ fun MainScreen(
     status: Status,
     stats: StatsSnapshot,
     upstream: UpstreamInfo,
+    hasWifiPermission: Boolean,
+    onNeedWifiPermission: () -> Unit,
     onConfig: (Config) -> Unit,
     onToggle: () -> Unit,
     onOpenSystemHotspot: () -> Unit,
@@ -83,6 +85,7 @@ fun MainScreen(
         ModePanel(config, busy, onConfig)
         if (config.mode != Mode.PROXY_ONLY) HotspotPanel(config, busy, onConfig)
         ProxyPanel(config, busy, onConfig)
+        WifiDirectToolsPanel(upstream, hasWifiPermission, onNeedWifiPermission)
         if (config.mode == Mode.PROXY_ONLY) {
             OutlinedButton(onClick = onOpenSystemHotspot, modifier = Modifier.fillMaxWidth()) {
                 Text("Open system wireless settings")
@@ -95,7 +98,7 @@ fun MainScreen(
 // ------------------------------------------------------------------------------ panels
 
 @Composable
-private fun Panel(title: String, content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
+internal fun Panel(title: String, content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
     Column(
         Modifier.fillMaxWidth().border(BorderStroke(1.dp, Term.line), RoundedCornerShape(6.dp))
             .background(Term.panel, RoundedCornerShape(6.dp)).padding(12.dp),
@@ -175,7 +178,7 @@ private fun UpstreamPanel(info: UpstreamInfo, config: Config, status: Status) {
 }
 
 @Composable
-private fun Line(k: String, v: String) {
+internal fun Line(k: String, v: String) {
     Row {
         Text(k.padEnd(7), style = MaterialTheme.typography.bodyMedium, color = Term.dim)
         Text(v, style = MaterialTheme.typography.bodyMedium)
@@ -205,11 +208,20 @@ private fun ModePanel(config: Config, locked: Boolean, onConfig: (Config) -> Uni
 @Composable
 private fun HotspotPanel(config: Config, locked: Boolean, onConfig: (Config) -> Unit) {
     val stealth = config.mode == Mode.STEALTH_ROOT
+    val direct = config.mode == Mode.WIFI_DIRECT
+    val editable = stealth || direct
     Panel("HOTSPOT") {
-        if (!stealth) {
+        if (!editable) {
             Text(
                 "Android assigns the SSID and password in this mode, and the SSID cannot be hidden. " +
-                    "Switch to Stealth (root) to control both.",
+                    "Switch to Stealth (root/Shizuku) to control both.",
+                style = MaterialTheme.typography.labelMedium, color = Term.amber,
+            )
+        }
+        if (direct) {
+            Text(
+                "Wi-Fi Direct names start with DIRECT-. Some phones ignore a custom name or password; " +
+                    "the real ones are shown after start. The name cannot be hidden.",
                 style = MaterialTheme.typography.labelMedium, color = Term.amber,
             )
         }
@@ -235,11 +247,11 @@ private fun HotspotPanel(config: Config, locked: Boolean, onConfig: (Config) -> 
                 style = MaterialTheme.typography.labelMedium,
             )
         }
-        Field("SSID", config.ssid, enabled = stealth && !locked) { onConfig(config.copy(ssid = it.take(32))) }
-        Field("Password (8–63)", config.password, enabled = stealth && !locked) { onConfig(config.copy(password = it.take(63))) }
+        Field("SSID", config.ssid, enabled = editable && !locked) { onConfig(config.copy(ssid = it.take(32))) }
+        Field("Password (8–63)", config.password, enabled = editable && !locked) { onConfig(config.copy(password = it.take(63))) }
         OutlinedButton(
             onClick = { onConfig(config.copy(password = ConfigStore.randomSecret(14))) },
-            enabled = stealth && !locked,
+            enabled = editable && !locked,
         ) { Text("Generate password") }
         Toggle("Hide SSID (don't broadcast)", config.hiddenSsid && stealth, enabled = stealth && !locked) {
             onConfig(config.copy(hiddenSsid = it))
