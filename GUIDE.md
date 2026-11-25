@@ -1,17 +1,18 @@
 # Victorious Tether — Victorious Framework living guide
 
-_Last synchronised with code: v0.1.0 + Shizuku backend + upstream check. Update this file in the same commit as any behaviour change._
+_Last synchronised with code: v0.1.0 with Shizuku, upstream checks and proxy DNS. Update this file in the same commit as any behaviour change._
 
 ## 1. Status
 
 | State | Item |
 |---|---|
-| Finished | Proxy server (HTTP, CONNECT, SOCKS5, auth, source/destination guards) — **13 JVM tests pass** |
+| Finished | Proxy server (HTTP, CONNECT, SOCKS5, auth, source/destination guards), covered by JVM tests |
+| Finished | Proxy DNS selection with system DNS, AdGuard ad blocking and custom DNS over HTTPS |
 | Finished | Config validation, Wi-Fi QR payload, foreground service, Quick Settings tile, Compose UI |
 | Finished | Debug APK builds, `lintDebug` clean |
 | In Progress | Nothing |
 | Finished (unverified on device) | Shizuku backend: Stealth without root |
-| Finished (logic tested, UI unverified) | Upstream check: shows what you are sharing and warns before it fails — **21 JVM tests pass** |
+| Finished (logic tested, UI unverified) | Upstream check shows what you are sharing and warns when starting the hotspot may interrupt the connection |
 | Deferred | Per-client list, upstream-network pinning, release signing |
 | Abandoned | Copying/decompiling the reference app (see §6) |
 
@@ -42,6 +43,12 @@ TetherService (foreground, connectedDevice)│
 ```
 
 Key files: `proxy/ProxyServer.kt`, `hotspot/*Backend.kt`, `root/SoftApMain.kt`, `service/TetherService.kt`, `data/Config.kt`.
+
+### Proxy DNS
+
+HTTP, CONNECT and SOCKS5 hostname requests use the resolver selected when the proxy starts. System DNS is the default. The AdGuard preset sends DNS requests to AdGuard’s filtering endpoint over HTTPS. Custom mode takes a full DNS-over-HTTPS URL for a user-selected provider. IP addresses supplied by clients go straight to the proxy’s destination checks. Android resolves the HTTPS endpoint’s own hostname during bootstrap.
+
+When the chosen HTTPS resolver fails, the proxy reports a connection error. Choose **System** and restart the proxy to use the phone’s resolver. Native tethering uses Android’s tethering DNS for clients that skip the proxy.
 
 ## 4. Root helper (the unverified part)
 

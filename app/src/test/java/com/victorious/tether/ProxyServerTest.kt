@@ -3,14 +3,17 @@ package com.victorious.tether
 import com.victorious.tether.data.Stats
 import com.victorious.tether.proxy.ProxyCredentials
 import com.victorious.tether.proxy.ProxyServer
+import okhttp3.Dns
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.DataInputStream
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.UnknownHostException
 import java.util.Base64
 
 /** Exercises the real proxy over loopback sockets: HTTP forward, CONNECT, SOCKS5, auth, SSRF guard. */
@@ -22,9 +25,12 @@ class ProxyServerTest {
 
     private fun freePort() = ServerSocket(0).use { it.localPort }
 
-    private fun startProxy(creds: ProxyCredentials? = null, blockLocal: Boolean = false): Int {
+    private fun startProxy(creds: ProxyCredentials? = null, blockLocal: Boolean = false, dns: Dns = Dns.SYSTEM): Int {
         val port = freePort()
-        ProxyServer(port, creds, stats, blockLocalDestinations = blockLocal).also { it.start(); closers += { it.stop() } }
+        ProxyServer(port, creds, stats, blockLocalDestinations = blockLocal, dns = dns).also {
+            it.start()
+            closers += { it.stop() }
+        }
         return port
     }
 
@@ -131,6 +137,57 @@ class ProxyServerTest {
         val origin = startOrigin(); val proxy = startProxy(blockLocal = true)
         val resp = rawHttp(proxy, "CONNECT 127.0.0.1:$origin HTTP/1.1\r\nHost: x\r\n\r\n")
         assertTrue(resp, resp.startsWith("HTTP/1.1 403"))
+    }
+
+    @Test fun httpForwardUsesConfiguredDns() {
+        val origin = startOrigin()
+        val proxy = startProxy(dns = testOriginDns())
+        val response = rawHttp(proxy, "GET http://origin.invalid:$origin/ HTTP/1.1\r\nHost: origin.invalid\r\n\r\n")
+        assertTrue(response, response.startsWith("HTTP/1.1 200"))
+    }
+
+    @Test fun connectStillRefusesLoopbackReturnedByConfiguredDns() {
+        val proxy = startProxy(blockLocal = true, dns = testOriginDns())
+        val response = rawHttp(proxy, "CONNECT origin.invalid:443 HTTP/1.1\r\nHost: origin.invalid\r\n\r\n")
+        assertTrue(response, response.startsWith("HTTP/1.1 403"))
+    }
+
+    @Test fun socks5PassesTheClientHostnameToConfiguredDns() {
+        val origin = startOrigin()
+        val proxy = startProxy(dns = testOriginDns())
+        Socket("127.0.0.1", proxy).use { socket ->
+            socket.soTimeout = 5000
+            val out = socket.getOutputStream()
+            val input = DataInputStream(socket.getInputStream())
+            out.write(byteArrayOf(5, 1, 0))
+            assertEquals(5, input.readUnsignedByte())
+            assertEquals(0, input.readUnsignedByte())
+            val host = "origin.invalid".toByteArray(Charsets.US_ASCII)
+            out.write(byteArrayOf(5, 1, 0, 3, host.size.toByte()) + host + byteArrayOf((origin shr 8).toByte(), origin.toByte()))
+            val reply = ByteArray(10).also(input::readFully)
+            assertEquals(0, reply[1].toInt())
+            val probe = "ECHO-dns".toByteArray(Charsets.US_ASCII)
+            out.write(probe)
+            val echo = ByteArray(probe.size).also(input::readFully)
+            assertEquals("ECHO-dns", echo.toString(Charsets.US_ASCII))
+        }
+    }
+
+    @Test fun configuredDnsFailureDoesNotFallBackToSystemDns() {
+        val origin = startOrigin()
+        val unreachableDns = object : Dns {
+            override fun lookup(hostname: String): List<InetAddress> = throw UnknownHostException(hostname)
+        }
+        val proxy = startProxy(dns = unreachableDns)
+        val response = rawHttp(proxy, "GET http://localhost:$origin/ HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        assertTrue(response, response.startsWith("HTTP/1.1 502"))
+    }
+
+    private fun testOriginDns() = object : Dns {
+        override fun lookup(hostname: String): List<InetAddress> {
+            if (hostname != "origin.invalid") throw UnknownHostException(hostname)
+            return listOf(InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1)))
+        }
     }
 
     @Test fun statsCountTraffic() {

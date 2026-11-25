@@ -14,7 +14,7 @@
 [![Build](https://github.com/Victorious93/VictorTether/actions/workflows/build.yml/badge.svg)](https://github.com/Victorious93/VictorTether/actions/workflows/build.yml)
 ![Platform](https://img.shields.io/badge/Android-11%2B-39FF14?logo=android&logoColor=black)
 ![Kotlin](https://img.shields.io/badge/Kotlin-Compose-0A0F0A?logo=kotlin&logoColor=39FF14)
-![Tests](https://img.shields.io/badge/JVM%20tests-13%20passing-39FF14)
+![Tests](https://img.shields.io/badge/JVM%20tests-proxy%20and%20config-39FF14)
 ![Device tested](https://img.shields.io/badge/on--device-not%20yet%20verified-FFB000)
 
 </div>
@@ -29,11 +29,12 @@
 | **Stealth mode (root or Shizuku)** | Brings up a real WPA2 hotspot where *you* choose the SSID and password, and can **hide the SSID**. Uses root, or Shizuku so no root is needed. |
 | **Proxy only** | Runs just the proxy on a hotspot, Wi-Fi or USB link you already have. Login is forced. |
 | **Upstream check** | Shows whether you are sharing Wi-Fi, mobile data or Ethernet, and warns *before* you start if your phone cannot keep Wi-Fi on while running a hotspot. |
+| **Proxy DNS** | Choose Android’s system resolver, AdGuard DNS ad blocking, or a custom DNS-over-HTTPS endpoint. |
 | **Join by QR** | The Wi-Fi QR code carries the hidden-network flag, so a phone can scan its way onto a hidden SSID. |
 | **Quality of life** | Foreground service, Quick Settings tile, live traffic counters, auto-stop timer, generated passwords. |
 | **Clean** | No ads, no billing, no analytics. `allowBackup` off. |
 
-> **Honest status:** the proxy is covered by 13 passing JVM tests that use real loopback sockets, and CI builds the APK. Hotspot start-up, the root helper, hidden-SSID behaviour, the tile and the notification have **not** been run on a physical device yet. Details in [GUIDE.md](GUIDE.md) §1 and §4.
+> JVM tests exercise the proxy over loopback sockets and check DNS configuration. CI runs the tests and builds the debug APK. Physical-device verification is pending for hotspot start-up, the root and Shizuku helpers, hidden-SSID behaviour, the tile, and the notification. See [GUIDE.md](GUIDE.md) §1 and §4.
 
 ## Pick a mode
 
@@ -55,6 +56,12 @@ Android only gives ordinary apps `startLocalOnlyHotspot`, which accepts no confi
 2. Open the app, pick a mode, and tap **[ START ]**. Grant the Wi-Fi / Nearby-devices and notification prompts.
 3. **Proxy · no root:** join the hotspot shown, then set your device's HTTP or SOCKS5 proxy to the `PROXY*` address and port.
 4. **Stealth:** pick *Root* or *Shizuku* (Shizuku must be running), set SSID and password, turn on **Hide SSID**, start, and join by scanning the QR code, or add the network manually with *hidden network* enabled.
+
+### Custom DNS and ad blocking
+
+Under **Proxy DNS**, choose **System**, **AdGuard ad blocking**, or **Custom DNS over HTTPS**. For a custom resolver, enter the provider’s full HTTPS DNS URL. Start the proxy to apply your selection.
+
+The selected resolver handles hostnames sent to the HTTP or SOCKS5 proxy. Enable remote hostname resolution in your SOCKS5 client. Clients using native tethering directly use Android’s tethering DNS. AdGuard receives the proxy’s hostname lookups when you select its preset.
 
 ## Build from source
 

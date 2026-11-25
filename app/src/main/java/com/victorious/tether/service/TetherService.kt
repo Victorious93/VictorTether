@@ -26,6 +26,7 @@ import com.victorious.tether.hotspot.HotspotBackend
 import com.victorious.tether.hotspot.LocalOnlyBackend
 import com.victorious.tether.hotspot.RootBackend
 import com.victorious.tether.hotspot.ShizukuBackend
+import com.victorious.tether.proxy.HttpsProxyDns
 import com.victorious.tether.proxy.ProxyCredentials
 import com.victorious.tether.proxy.ProxyServer
 import com.victorious.tether.util.Net
@@ -38,6 +39,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import okhttp3.Dns
 
 /** Owns the hotspot + proxy lifetime. Everything the UI/tile shows comes from [TetherState]. */
 class TetherService : Service() {
@@ -46,6 +48,7 @@ class TetherService : Service() {
     private var ticker: Job? = null
     private var backend: HotspotBackend? = null
     private var proxy: ProxyServer? = null
+    private var proxyDns: HttpsProxyDns? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private val stats = Stats()
 
@@ -106,7 +109,11 @@ class TetherService : Service() {
 
     private fun startProxy(config: Config) {
         val creds = if (config.authRequired) ProxyCredentials(config.proxyUser, config.proxyPass) else null
-        proxy = ProxyServer(config.port, creds, stats).also { it.start() }
+        val dns = config.proxyDnsEndpoint()?.let(::HttpsProxyDns)
+        proxyDns = dns
+        val server = ProxyServer(config.port, creds, stats, dns = dns ?: Dns.SYSTEM)
+        proxy = server
+        server.start()
     }
 
     private fun launchTicker(config: Config) {
@@ -132,6 +139,8 @@ class TetherService : Service() {
 
     private fun teardown() {
         proxy?.stop(); proxy = null
+        proxyDns?.close()
+        proxyDns = null
         // stop() on the backends is quick; the service scope may already be cancelled, so block briefly.
         backend?.let { b -> runCatching { runBlocking { b.stop() } } }
         backend = null

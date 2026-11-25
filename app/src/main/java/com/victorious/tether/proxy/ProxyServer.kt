@@ -1,6 +1,7 @@
 package com.victorious.tether.proxy
 
 import com.victorious.tether.data.Stats
+import okhttp3.Dns
 import java.io.BufferedInputStream
 import java.io.IOException
 import java.io.InputStream
@@ -35,6 +36,7 @@ class ProxyServer(
     private val stats: Stats,
     /** Only tests turn this off, so they can use loopback echo servers as destinations. */
     private val blockLocalDestinations: Boolean = true,
+    private val dns: Dns = Dns.SYSTEM,
 ) {
     private val running = AtomicBoolean(false)
     private var server: ServerSocket? = null
@@ -233,7 +235,7 @@ class ProxyServer(
     /** Resolves and connects, refusing local destinations; reports failures via [fail] then aborts. */
     private fun connectOrRespond(host: String, destPort: Int, fail: (Int, String) -> Unit): Socket {
         val addr = try {
-            InetAddress.getAllByName(host).firstOrNull {
+            dns.lookup(host).firstOrNull {
                 !blockLocalDestinations || (!it.isLoopbackAddress && !it.isAnyLocalAddress && !it.isMulticastAddress)
             }
                 ?: run { fail(403, "Forbidden"); throw ProxyRefusal() }

@@ -40,6 +40,7 @@ import com.victorious.tether.data.Config
 import com.victorious.tether.data.ConfigStore
 import com.victorious.tether.data.Mode
 import com.victorious.tether.data.Privilege
+import com.victorious.tether.data.ProxyDnsMode
 import com.victorious.tether.data.Status
 import com.victorious.tether.data.StatsSnapshot
 import com.victorious.tether.util.Net
@@ -274,6 +275,7 @@ private fun ProxyPanel(config: Config, locked: Boolean, onConfig: (Config) -> Un
                 Field("Username", config.proxyUser, enabled = !locked) { onConfig(config.copy(proxyUser = it)) }
                 Field("Password", config.proxyPass, enabled = !locked) { onConfig(config.copy(proxyPass = it)) }
             }
+            ProxyDnsControls(config, locked, onConfig)
         }
         Field("Auto-stop after (minutes, 0 = never)", config.autoStopMinutes.toString(), enabled = !locked, numeric = true) {
             onConfig(config.copy(autoStopMinutes = it.filter(Char::isDigit).take(4).toIntOrNull() ?: 0))
@@ -281,6 +283,32 @@ private fun ProxyPanel(config: Config, locked: Boolean, onConfig: (Config) -> Un
         val problems = config.validate()
         problems.forEach { Text("! $it", color = Term.red, style = MaterialTheme.typography.bodyMedium) }
     }
+}
+
+@Composable
+private fun ProxyDnsControls(config: Config, locked: Boolean, onConfig: (Config) -> Unit) {
+    Text("Proxy DNS", style = MaterialTheme.typography.bodyMedium)
+    ProxyDnsMode.entries.forEach { mode ->
+        FilterChip(
+            selected = config.proxyDnsMode == mode,
+            enabled = !locked,
+            onClick = { onConfig(config.copy(proxyDnsMode = mode)) },
+            label = { Text(mode.label) },
+        )
+    }
+    if (config.proxyDnsMode == ProxyDnsMode.CUSTOM_HTTPS) {
+        Field("HTTPS DNS URL", config.proxyDnsUrl, enabled = !locked) {
+            onConfig(config.copy(proxyDnsUrl = it.take(2048)))
+        }
+    }
+    Text(
+        if (config.proxyDnsMode == ProxyDnsMode.ADGUARD) {
+            "AdGuard receives proxy hostname lookups and blocks supported ad and tracker domains."
+        } else {
+            "Applies to hostnames sent to the HTTP or SOCKS5 proxy."
+        },
+        style = MaterialTheme.typography.labelMedium,
+    )
 }
 
 @Composable
