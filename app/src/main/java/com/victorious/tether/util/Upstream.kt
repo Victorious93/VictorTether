@@ -40,7 +40,10 @@ object Upstream {
             }
         }
 
-        if (info.transport == Transport.WIFI && mode != Mode.PROXY_ONLY) {
+        if (info.transport == Transport.WIFI && mode == Mode.WIFI_DIRECT) {
+            add(Advice(Severity.INFO, "Wi-Fi Direct normally keeps your Wi-Fi connected, which makes it the best option for sharing Wi-Fi. Phones that cannot do both will fail to create the group; the app will say so."))
+        }
+        if (info.transport == Transport.WIFI && (mode == Mode.PROXY_LOCAL || mode == Mode.STEALTH_ROOT)) {
             when (info.staApConcurrent) {
                 true -> add(Advice(Severity.OK, "This phone reports it can stay on Wi-Fi while running a hotspot."))
                 false -> add(Advice(Severity.BAD,

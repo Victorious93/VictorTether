@@ -14,7 +14,7 @@
 [![Build](https://github.com/Victorious93/VictorTether/actions/workflows/build.yml/badge.svg)](https://github.com/Victorious93/VictorTether/actions/workflows/build.yml)
 ![Platform](https://img.shields.io/badge/Android-11%2B-39FF14?logo=android&logoColor=black)
 ![Kotlin](https://img.shields.io/badge/Kotlin-Compose-0A0F0A?logo=kotlin&logoColor=39FF14)
-![Tests](https://img.shields.io/badge/JVM%20tests-13%20passing-39FF14)
+![Tests](https://img.shields.io/badge/JVM%20tests-24%20passing-39FF14)
 ![Device tested](https://img.shields.io/badge/on--device-not%20yet%20verified-FFB000)
 
 </div>
@@ -27,6 +27,7 @@
 |---|---|
 | **Proxy tether, no root** | Starts Android's LocalOnlyHotspot and serves an HTTP / CONNECT / SOCKS5 proxy on one port. |
 | **Stealth mode (root or Shizuku)** | Brings up a real WPA2 hotspot where *you* choose the SSID and password, and can **hide the SSID**. Uses root, or Shizuku so no root is needed. |
+| **Wi-Fi Direct** | A Wi-Fi Direct group plus the proxy. Usually works while your phone stays on Wi-Fi, so it is the best route for sharing existing Wi-Fi. Name starts with `DIRECT-` and cannot be hidden. Includes tools to check support, scan nearby devices and list group members. |
 | **Proxy only** | Runs just the proxy on a hotspot, Wi-Fi or USB link you already have. Login is forced. |
 | **Upstream check** | Shows whether you are sharing Wi-Fi, mobile data or Ethernet, and warns *before* you start if your phone cannot keep Wi-Fi on while running a hotspot. |
 | **Join by QR** | The Wi-Fi QR code carries the hidden-network flag, so a phone can scan its way onto a hidden SSID. |
@@ -40,6 +41,7 @@
 | Mode | Root | SSID | You set SSID / password | How clients get internet |
 |---|:---:|---|:---:|---|
 | **Proxy · no root** | no | visible (Android's limit) | no | set an HTTP or SOCKS5 proxy to `ip:port` |
+| **Wi-Fi Direct** | no | `DIRECT-…`, cannot hide | partly | set an HTTP or SOCKS5 proxy to `ip:port` |
 | **Stealth · root / Shizuku** | root _or_ Shizuku | **hidden** | yes | normal tethering (NAT), proxy optional |
 | **Proxy only** | no | n/a | n/a | you supply the link; proxy login required |
 

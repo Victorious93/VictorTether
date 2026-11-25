@@ -9,6 +9,10 @@ enum class Mode(val label: String, val blurb: String) {
         "Proxy · no root",
         "Android LocalOnlyHotspot + built-in proxy. SSID is visible and chosen by Android."
     ),
+    WIFI_DIRECT(
+        "Wi-Fi Direct · no root",
+        "Wi-Fi Direct group + built-in proxy. Usually works while the phone stays on Wi-Fi. Name starts with DIRECT- and cannot be hidden."
+    ),
     STEALTH_ROOT(
         "Stealth · root/Shizuku",
         "Real tethering via a root or Shizuku helper. Lets you set the SSID, password and HIDE the SSID."
@@ -37,7 +41,7 @@ data class Config(
 ) {
     /** Human-readable problems that would stop the session from starting. Empty = OK. */
     fun validate(): List<String> = buildList {
-        if (mode == Mode.STEALTH_ROOT) {
+        if (mode == Mode.STEALTH_ROOT || mode == Mode.WIFI_DIRECT) {
             if (ssid.isBlank() || ssid.toByteArray().size > 32) add("SSID must be 1–32 bytes")
             if (password.length !in 8..63) add("Wi-Fi password must be 8–63 characters")
         }

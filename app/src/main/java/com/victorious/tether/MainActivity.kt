@@ -59,7 +59,12 @@ class MainActivity : ComponentActivity() {
             if (wifiOk) startChecked(config)
         }
 
+        var hasWifi by remember { mutableStateOf(granted(wifiPermission())) }
+        val toolsPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { hasWifi = it }
+
         MainScreen(
+            hasWifiPermission = hasWifi,
+            onNeedWifiPermission = { toolsPermission.launch(wifiPermission()) },
             config = config,
             status = status,
             stats = stats,
@@ -109,10 +114,13 @@ class MainActivity : ComponentActivity() {
 
     private fun granted(p: String) = ContextCompat.checkSelfPermission(this, p) == PackageManager.PERMISSION_GRANTED
 
+    private fun wifiPermission() =
+        if (Build.VERSION.SDK_INT >= 33) Manifest.permission.NEARBY_WIFI_DEVICES else Manifest.permission.ACCESS_FINE_LOCATION
+
     private fun requiredPermissions(c: Config): List<String> = buildList {
         if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
-        if (c.mode == Mode.PROXY_LOCAL) {
-            add(if (Build.VERSION.SDK_INT >= 33) Manifest.permission.NEARBY_WIFI_DEVICES else Manifest.permission.ACCESS_FINE_LOCATION)
+        if (c.mode == Mode.PROXY_LOCAL || c.mode == Mode.WIFI_DIRECT) {
+            add(wifiPermission())
         }
     }
 }

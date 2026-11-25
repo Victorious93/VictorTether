@@ -26,6 +26,7 @@ import com.victorious.tether.hotspot.HotspotBackend
 import com.victorious.tether.hotspot.LocalOnlyBackend
 import com.victorious.tether.hotspot.RootBackend
 import com.victorious.tether.hotspot.ShizukuBackend
+import com.victorious.tether.hotspot.WifiDirectBackend
 import com.victorious.tether.proxy.ProxyCredentials
 import com.victorious.tether.proxy.ProxyServer
 import com.victorious.tether.util.Net
@@ -98,6 +99,7 @@ class TetherService : Service() {
         val b: HotspotBackend = when (config.mode) {
             Mode.PROXY_LOCAL -> LocalOnlyBackend(this) { shutdown() }
             Mode.STEALTH_ROOT -> if (config.privilege == Privilege.SHIZUKU) ShizukuBackend(this) else RootBackend(this)
+            Mode.WIFI_DIRECT -> WifiDirectBackend(this)
             Mode.PROXY_ONLY -> return null
         }
         backend = b
