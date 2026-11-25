@@ -8,18 +8,22 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.victorious.tether.MainActivity
 import com.victorious.tether.R
 import com.victorious.tether.data.Config
 import com.victorious.tether.data.ConfigStore
-import com.victorious.tether.data.HotspotInfo
 import com.victorious.tether.data.Mode
 import com.victorious.tether.data.Privilege
 import com.victorious.tether.data.Stats
+import com.victorious.tether.data.StatsSnapshot
 import com.victorious.tether.data.Status
 import com.victorious.tether.data.TetherState
 import com.victorious.tether.hotspot.HotspotBackend
@@ -31,34 +35,37 @@ import com.victorious.tether.proxy.HttpsProxyDns
 import com.victorious.tether.proxy.ProxyCredentials
 import com.victorious.tether.proxy.ProxyServer
 import com.victorious.tether.util.Net
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import okhttp3.Dns
+import java.net.InetAddress
+import javax.net.SocketFactory
 
 /** Owns the hotspot + proxy lifetime. Everything the UI/tile shows comes from [TetherState]. */
 class TetherService : Service() {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val connectivity by lazy { getSystemService(ConnectivityManager::class.java) }
     private var session: Job? = null
-    private var ticker: Job? = null
-    private var backend: HotspotBackend? = null
-    private var proxy: ProxyServer? = null
-    private var proxyDns: HttpsProxyDns? = null
-    private var wakeLock: PowerManager.WakeLock? = null
-    private val stats = Stats()
+    private var destroyed = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_STOP -> shutdown()
-            else -> if (session?.isActive != true) begin()
+            ACTION_STOP -> requestStop()
+            else -> if (session == null) begin()
         }
         return START_NOT_STICKY
     }
@@ -73,86 +80,125 @@ class TetherService : Service() {
         }
         TetherState.set(Status.Starting)
         startForegroundCompat(buildNotification("Starting…"))
-        wakeLock = (getSystemService(POWER_SERVICE) as PowerManager)
-            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "VictoriousTether:session").apply { acquire() }
-
-        session = scope.launch {
-            try {
-                val hotspot = bringUpHotspot(config)
-                if (config.proxyRuns) startProxy(config)
-                val startedAt = System.currentTimeMillis()
-                TetherState.set(Status.Running(config, hotspot, Net.candidateAddresses(), startedAt))
-                updateNotification("Running · ${hotspot?.ssid ?: "proxy only"}")
-                launchTicker(config)
-                if (config.autoStopMinutes > 0) {
-                    delay(config.autoStopMinutes * 60_000L)
-                    shutdown()
-                }
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                teardown()
-                TetherState.set(Status.Failed(e.message ?: e.javaClass.simpleName))
-                stopSelf()
-            }
-        }
+        val job = scope.launch(start = CoroutineStart.LAZY) { runSession(config) }
+        session = job
+        job.start()
     }
 
-    private suspend fun bringUpHotspot(config: Config): HotspotInfo? {
-        val b: HotspotBackend = when (config.mode) {
-            Mode.PROXY_LOCAL -> LocalOnlyBackend(this) { shutdown() }
+    private fun hotspotBackend(config: Config, job: Job): HotspotBackend? =
+        when (config.mode) {
+            Mode.PROXY_LOCAL -> LocalOnlyBackend(this) {
+                if (session === job) requestStop()
+            }
             Mode.STEALTH_ROOT -> if (config.privilege == Privilege.SHIZUKU) ShizukuBackend(this) else RootBackend(this)
             Mode.WIFI_DIRECT -> WifiDirectBackend(this)
-            Mode.PROXY_ONLY -> return null
+            Mode.PROXY_ONLY -> null
         }
-        backend = b
-        return b.start(config)
-    }
 
-    private fun startProxy(config: Config) {
-        val creds = if (config.authRequired) ProxyCredentials(config.proxyUser, config.proxyPass) else null
-        val dns = config.proxyDnsEndpoint()?.let(::HttpsProxyDns)
-        proxyDns = dns
-        val server = ProxyServer(config.port, creds, stats, dns = dns ?: Dns.SYSTEM)
-        proxy = server
-        server.start()
-    }
+    private suspend fun runSession(config: Config) {
+        val stats = Stats()
+        var backend: HotspotBackend? = null
+        var proxy: ProxyServer? = null
+        var proxyDns: HttpsProxyDns? = null
+        var wakeLock: PowerManager.WakeLock? = null
+        var failure: String? = null
+        try {
+            val vpn = if (config.proxyRuns && config.requireProxyVpn) {
+                checkNotNull(activeVpn()) { "Connect a VPN that includes VictorTether, then start again." }
+            } else null
+            wakeLock = (getSystemService(POWER_SERVICE) as PowerManager)
+                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "VictoriousTether:session").apply { acquire() }
+            backend = hotspotBackend(config, currentCoroutineContext().job)
+            val hotspot = backend?.start(config)
 
-    private fun launchTicker(config: Config) {
-        ticker = scope.launch {
-            while (isActive) {
-                val s = stats.snapshot()
-                TetherState.publish(s)
-                updateNotification("↑ ${Net.humanBytes(s.bytesUp)}  ↓ ${Net.humanBytes(s.bytesDown)} · ${s.activeConnections} conn")
-                delay(1000)
+            if (config.proxyRuns) {
+                checkVpn(vpn)
+                val sockets = vpn?.socketFactory ?: SocketFactory.getDefault()
+                val systemDns = if (vpn == null) Dns.SYSTEM else object : Dns {
+                    override fun lookup(hostname: String): List<InetAddress> = vpn.getAllByName(hostname).asList()
+                }
+                proxyDns = config.proxyDnsEndpoint()?.let { HttpsProxyDns(it, sockets, systemDns) }
+                val credentials = if (config.authRequired) ProxyCredentials(config.proxyUser, config.proxyPass) else null
+                val server = ProxyServer(
+                    config.port, credentials, stats,
+                    dns = proxyDns ?: systemDns,
+                    openUpstreamSocket = sockets::createSocket,
+                )
+                proxy = server
+                withContext(Dispatchers.IO) { server.start() }
+            }
+
+            val addresses = withContext(Dispatchers.IO) { Net.candidateAddresses() }
+            checkVpn(vpn)
+            TetherState.set(Status.Running(config, hotspot, addresses, System.currentTimeMillis()))
+            publishTraffic(config, vpn, stats)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            failure = e.message ?: e.javaClass.simpleName
+        } finally {
+            if (!destroyed) TetherState.set(Status.Stopping)
+            withContext(NonCancellable) {
+                withContext(Dispatchers.IO) {
+                    proxy?.stop()
+                    proxyDns?.close()
+                }
+                runCatching { withTimeout(10_000) { backend?.stop() } }
+                wakeLock?.takeIf { it.isHeld }?.release()
+                if (!destroyed) {
+                    session = null
+                    TetherState.publish(StatsSnapshot())
+                    TetherState.set(failure?.let { Status.Failed(it) } ?: Status.Idle)
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
             }
         }
     }
 
-    private fun shutdown() {
-        session?.cancel()
-        ticker?.cancel()
-        teardown()
-        TetherState.set(Status.Idle)
-        TetherState.publish(com.victorious.tether.data.StatsSnapshot())
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+    private suspend fun publishTraffic(config: Config, vpn: Network?, stats: Stats) {
+        val deadline = if (config.autoStopMinutes > 0) {
+            SystemClock.elapsedRealtime() + config.autoStopMinutes * 60_000L
+        } else Long.MAX_VALUE
+        while (true) {
+            val timeLeft = deadline - SystemClock.elapsedRealtime()
+            if (timeLeft <= 0) return
+            checkVpn(vpn)
+            val counters = stats.snapshot()
+            TetherState.publish(counters)
+            val route = if (vpn != null) "VPN · " else ""
+            updateNotification("$route↑ ${Net.humanBytes(counters.bytesUp)}  ↓ ${Net.humanBytes(counters.bytesDown)} · ${counters.activeConnections} conn")
+            delay(minOf(1000L, timeLeft))
+        }
     }
 
-    private fun teardown() {
-        proxy?.stop(); proxy = null
-        proxyDns?.close()
-        proxyDns = null
-        // stop() on the backends is quick; the service scope may already be cancelled, so block briefly.
-        backend?.let { b -> runCatching { runBlocking { b.stop() } } }
-        backend = null
-        wakeLock?.takeIf { it.isHeld }?.release(); wakeLock = null
+    private fun activeVpn(): Network? {
+        val network = connectivity.activeNetwork ?: return null
+        val capabilities = connectivity.getNetworkCapabilities(network) ?: return null
+        return network.takeIf { capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN) }
+    }
+
+    private fun checkVpn(vpn: Network?) {
+        check(vpn == null || activeVpn() == vpn) { "VPN disconnected or changed. Reconnect it, then start VictorTether again." }
+    }
+
+    private fun requestStop() {
+        val current = session
+        if (current == null) {
+            stopSelf()
+            return
+        }
+        if (current.isActive) {
+            TetherState.set(Status.Stopping)
+            current.cancel()
+        }
     }
 
     override fun onDestroy() {
-        teardown()
+        destroyed = true
         scope.cancel()
-        if (TetherState.status.value is Status.Running || TetherState.status.value is Status.Starting) {
+        if (session != null) {
+            TetherState.publish(StatsSnapshot())
             TetherState.set(Status.Idle)
         }
         super.onDestroy()

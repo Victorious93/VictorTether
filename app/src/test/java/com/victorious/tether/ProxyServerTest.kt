@@ -13,6 +13,7 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.SocketException
 import java.net.UnknownHostException
 import java.util.Base64
 
@@ -25,9 +26,17 @@ class ProxyServerTest {
 
     private fun freePort() = ServerSocket(0).use { it.localPort }
 
-    private fun startProxy(creds: ProxyCredentials? = null, blockLocal: Boolean = false, dns: Dns = Dns.SYSTEM): Int {
+    private fun startProxy(
+        creds: ProxyCredentials? = null,
+        blockLocal: Boolean = false,
+        dns: Dns = Dns.SYSTEM,
+        openUpstreamSocket: () -> Socket = ::Socket,
+    ): Int {
         val port = freePort()
-        ProxyServer(port, creds, stats, blockLocalDestinations = blockLocal, dns = dns).also {
+        ProxyServer(
+            port, creds, stats, blockLocalDestinations = blockLocal, dns = dns,
+            openUpstreamSocket = openUpstreamSocket,
+        ).also {
             it.start()
             closers += { it.stop() }
         }
@@ -91,6 +100,42 @@ class ProxyServerTest {
             val back = ByteArray(7).also { din.readFully(it) }
             assertEquals("ECHO-me", String(back))
         }
+    }
+
+    @Test fun stopClosesTheClientAndOriginOfAnActiveTunnel() {
+        ServerSocket(0).use { origin ->
+            origin.soTimeout = 3000
+            val port = freePort()
+            val proxy = ProxyServer(port, null, stats, blockLocalDestinations = false)
+            proxy.start()
+            closers += { proxy.stop() }
+            Socket("127.0.0.1", port).use { client ->
+                client.soTimeout = 3000
+                val request = "CONNECT 127.0.0.1:${origin.localPort} HTTP/1.1\r\nHost: x\r\n\r\n"
+                client.getOutputStream().write(request.toByteArray())
+                val input = DataInputStream(client.getInputStream())
+                val header = StringBuilder()
+                while (!header.endsWith("\r\n\r\n")) header.append(input.readUnsignedByte().toChar())
+                assertTrue(header.toString(), header.startsWith("HTTP/1.1 200"))
+                origin.accept().use { upstream ->
+                    upstream.soTimeout = 3000
+                    client.getOutputStream().write(42)
+                    assertEquals(42, upstream.getInputStream().read())
+
+                    proxy.stop()
+
+                    assertEquals(-1, input.read())
+                    assertEquals(-1, upstream.getInputStream().read())
+                }
+            }
+        }
+    }
+
+    @Test fun socketFactoryFailureDoesNotFallBackToTheDefaultRoute() {
+        val origin = startOrigin()
+        val proxy = startProxy(openUpstreamSocket = { throw SocketException("Selected network disconnected") })
+        val response = rawHttp(proxy, "GET http://127.0.0.1:$origin/ HTTP/1.1\r\nHost: x\r\n\r\n")
+        assertTrue(response, response.startsWith("HTTP/1.1 502"))
     }
 
     @Test fun socks5ConnectWithoutAuth() {

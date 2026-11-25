@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -49,6 +50,7 @@ class MainActivity : ComponentActivity() {
         val monitor = remember { UpstreamMonitor(this) }
         DisposableEffect(monitor) { monitor.start(); onDispose { monitor.stop() } }
         val upstream by monitor.state.collectAsState()
+        val meshIntent = remember { packageManager.getLaunchIntentForPackage(MESH_PACKAGE) }
 
         val permissionLauncher = rememberLauncherForActivityResult(
             ActivityResultContracts.RequestMultiplePermissions()
@@ -74,8 +76,15 @@ class MainActivity : ComponentActivity() {
                 if (status is Status.Idle || status is Status.Failed) {
                     val missing = requiredPermissions(config).filterNot { granted(it) }
                     if (missing.isEmpty()) startChecked(config) else permissionLauncher.launch(missing.toTypedArray())
-                } else {
+                } else if (status != Status.Stopping) {
                     TetherService.stop(this)
+                }
+            },
+            onOpenMesh = meshIntent?.let { intent ->
+                {
+                    runCatching { startActivity(intent) }.onFailure {
+                        Toast.makeText(this, "Could not open Victorious Mesh", Toast.LENGTH_SHORT).show()
+                    }
                 }
             },
             onOpenSystemHotspot = {
@@ -110,7 +119,10 @@ class MainActivity : ComponentActivity() {
         Shizuku.requestPermission(SHIZUKU_REQUEST)
     }
 
-    private companion object { const val SHIZUKU_REQUEST = 4242 }
+    private companion object {
+        const val SHIZUKU_REQUEST = 4242
+        const val MESH_PACKAGE = "com.victorious.mesh"
+    }
 
     private fun granted(p: String) = ContextCompat.checkSelfPermission(this, p) == PackageManager.PERMISSION_GRANTED
 

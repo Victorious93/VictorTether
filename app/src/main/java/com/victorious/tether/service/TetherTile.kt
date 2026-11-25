@@ -31,6 +31,7 @@ class TetherTile : TileService() {
     override fun onClick() {
         when (TetherState.status.value) {
             is Status.Running, Status.Starting -> TetherService.stop(this)
+            Status.Stopping -> Unit
             else -> runCatching { TetherService.start(this) }.onFailure { openApp() }
         }
     }
@@ -40,12 +41,14 @@ class TetherTile : TileService() {
         tile.state = when (s) {
             is Status.Running -> Tile.STATE_ACTIVE
             Status.Starting -> Tile.STATE_ACTIVE
+            Status.Stopping -> Tile.STATE_UNAVAILABLE
             else -> Tile.STATE_INACTIVE
         }
         tile.label = "Victorious Tether"
         tile.subtitle = when (s) {
             is Status.Running -> "On"
             Status.Starting -> "Starting…"
+            Status.Stopping -> "Stopping…"
             is Status.Failed -> "Failed"
             Status.Idle -> "Off"
         }

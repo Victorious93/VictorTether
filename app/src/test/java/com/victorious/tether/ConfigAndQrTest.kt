@@ -29,6 +29,16 @@ class ConfigAndQrTest {
         assertTrue(c.copy(proxyPass = "abc").validate().isEmpty())
     }
 
+    @Test fun sharingTheVpnRequiresProxyLoginInHotspotModes() {
+        for (mode in listOf(Mode.PROXY_LOCAL, Mode.WIFI_DIRECT, Mode.STEALTH_ROOT)) {
+            val original = Config(mode = mode, password = "12345678")
+            val shared = original.copy(requireProxyVpn = true)
+            assertTrue("$mode default", !original.authRequired && original.validate().isEmpty())
+            assertTrue("$mode VPN login", shared.authRequired && shared.validate().any { "username and password" in it })
+            assertTrue("$mode VPN valid login", shared.copy(proxyPass = "secret").validate().isEmpty())
+        }
+    }
+
     @Test fun stealthWithoutProxySkipsProxyValidation() {
         val c = Config(
             mode = Mode.STEALTH_ROOT, ssid = "n", password = "12345678", proxyEnabled = false, port = 1,

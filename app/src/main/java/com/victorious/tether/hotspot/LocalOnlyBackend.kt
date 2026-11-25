@@ -24,9 +24,13 @@ class LocalOnlyBackend(context: Context, private val onExternalStop: () -> Unit)
     override suspend fun start(config: Config): HotspotInfo = suspendCancellableCoroutine { cont ->
         val callback = object : WifiManager.LocalOnlyHotspotCallback() {
             override fun onStarted(res: WifiManager.LocalOnlyHotspotReservation) {
+                if (!cont.isActive) {
+                    res.close()
+                    return
+                }
                 reservation = res
                 val sa = res.softApConfiguration
-                if (cont.isActive) cont.resume(HotspotInfo(sa.ssid.orEmpty(), sa.passphrase.orEmpty(), hidden = false))
+                cont.resume(HotspotInfo(sa.ssid.orEmpty(), sa.passphrase.orEmpty(), hidden = false))
             }
 
             override fun onStopped() { onExternalStop() }

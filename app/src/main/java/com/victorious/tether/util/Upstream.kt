@@ -56,7 +56,7 @@ object Upstream {
             }
         }
         if (info.transport == Transport.VPN) {
-            add(Advice(Severity.INFO, "A VPN is active. Shared traffic through the proxy will follow it; Android may refuse to start a hotspot while a VPN is up."))
+            add(Advice(Severity.INFO, "Android reports a VPN for VictorTether. Enable Share VPN with proxy clients to bind the proxy to that connection."))
         }
     }
 

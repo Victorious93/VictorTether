@@ -14,6 +14,7 @@ data class StatsSnapshot(val activeConnections: Int = 0, val totalConnections: L
 sealed interface Status {
     data object Idle : Status
     data object Starting : Status
+    data object Stopping : Status
     data class Running(
         val config: Config,
         val hotspot: HotspotInfo?,

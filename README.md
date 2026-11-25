@@ -31,6 +31,7 @@
 | **Proxy only** | Runs just the proxy on a hotspot, Wi-Fi or USB link you already have. Login is forced. |
 | **Upstream check** | Shows whether you are sharing Wi-Fi, mobile data or Ethernet, and warns *before* you start if your phone cannot keep Wi-Fi on while running a hotspot. |
 | **Proxy DNS** | Choose Android’s system resolver, AdGuard DNS ad blocking, or a custom DNS-over-HTTPS endpoint. |
+| **VPN sharing** | Share the phone’s active VPN with authenticated HTTP and SOCKS5 clients. Open Victorious Mesh from the proxy panel when it is installed. |
 | **Join by QR** | The Wi-Fi QR code carries the hidden-network flag, so a phone can scan its way onto a hidden SSID. |
 | **Quality of life** | Foreground service, Quick Settings tile, live traffic counters, auto-stop timer, generated passwords. |
 | **Clean** | No ads, no billing, no analytics. `allowBackup` off. |
@@ -64,6 +65,14 @@ Android only gives ordinary apps `startLocalOnlyHotspot`, which accepts no confi
 Under **Proxy DNS**, choose **System**, **AdGuard ad blocking**, or **Custom DNS over HTTPS**. For a custom resolver, enter the provider’s full HTTPS DNS URL. Start the proxy to apply your selection.
 
 The selected resolver handles hostnames sent to the HTTP or SOCKS5 proxy. Enable remote hostname resolution in your SOCKS5 client. Clients using native tethering directly use Android’s tethering DNS. AdGuard receives the proxy’s hostname lookups when you select its preset.
+
+### Share your VPN with connected devices
+
+1. Connect Victorious Mesh or another VPN that includes VictorTether in its app routing. Select an exit node in Mesh if you want to share the exit node’s public internet IP.
+2. In VictorTether, enable **Share VPN with proxy clients** in the **Proxy** panel. Choose **System** DNS when you want to resolve Mesh hostnames through MagicDNS. Check the displayed proxy username and password, then start the session.
+3. Join from the other device and configure its HTTP or SOCKS5 proxy using the local **PROXY** address and port shown in VictorTether. For SOCKS5 hostnames, enable DNS resolution through the proxy.
+
+Proxy clients reach Mesh services through the phone’s Mesh identity. Each device needs its own VPN enrollment for a separate Mesh IP. Native Android tethering uses its own routing. VictorTether pins the proxy session to the active VPN and ends the session if that connection is lost or replaced.
 
 ## Build from source
 

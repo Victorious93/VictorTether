@@ -49,6 +49,7 @@ data class Config(
     val autoStopMinutes: Int = 0,
     val proxyDnsMode: ProxyDnsMode = ProxyDnsMode.SYSTEM,
     val proxyDnsUrl: String = "",
+    val requireProxyVpn: Boolean = false,
 ) {
     /** Human-readable problems that would stop the session from starting. Empty = OK. */
     fun validate(): List<String> = buildList {
@@ -68,8 +69,10 @@ data class Config(
         if (autoStopMinutes < 0) add("Auto-stop cannot be negative")
     }
 
-    /** Proxy-only mode is exposed on whatever network you are on, so login is forced on. */
-    val authRequired: Boolean get() = requireProxyAuth || mode == Mode.PROXY_ONLY
+    /** Proxy-only sessions and shared VPN access both require a client login. */
+    val proxyAuthForced: Boolean get() = mode == Mode.PROXY_ONLY || requireProxyVpn
+
+    val authRequired: Boolean get() = requireProxyAuth || proxyAuthForced
 
     val proxyRuns: Boolean get() = mode != Mode.STEALTH_ROOT || proxyEnabled
 
@@ -108,6 +111,7 @@ class ConfigStore(context: Context) {
             autoStopMinutes = sp.getInt("autoStop", d.autoStopMinutes),
             proxyDnsMode = ProxyDnsMode.entries.firstOrNull { it.name == savedDnsMode } ?: d.proxyDnsMode,
             proxyDnsUrl = sp.getString("proxyDnsUrl", d.proxyDnsUrl) ?: d.proxyDnsUrl,
+            requireProxyVpn = sp.getBoolean("requireProxyVpn", d.requireProxyVpn),
         )
         // Persist generated secrets so they stay stable between launches.
         if (!sp.contains("password") || !sp.contains("proxyPass")) save(cfg)
@@ -122,6 +126,7 @@ class ConfigStore(context: Context) {
             .putString("proxyUser", c.proxyUser).putString("proxyPass", c.proxyPass)
             .putInt("autoStop", c.autoStopMinutes)
             .putString("proxyDnsMode", c.proxyDnsMode.name).putString("proxyDnsUrl", c.proxyDnsUrl)
+            .putBoolean("requireProxyVpn", c.requireProxyVpn)
             .apply()
     }
 

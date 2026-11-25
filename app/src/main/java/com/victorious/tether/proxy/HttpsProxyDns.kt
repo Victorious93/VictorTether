@@ -12,11 +12,17 @@ import java.net.InetAddress
 import java.net.Proxy
 import java.net.UnknownHostException
 import java.util.concurrent.TimeUnit
+import javax.net.SocketFactory
 
 /** Resolves proxy destinations through a user-selected HTTPS resolver. */
-internal class HttpsProxyDns(endpoint: HttpUrl) : Dns, Closeable {
+internal class HttpsProxyDns(
+    endpoint: HttpUrl,
+    sockets: SocketFactory = SocketFactory.getDefault(),
+    bootstrapDns: Dns = Dns.SYSTEM,
+) : Dns, Closeable {
     private val client = OkHttpClient.Builder()
         .proxy(Proxy.NO_PROXY)
+        .socketFactory(sockets)
         .followRedirects(false)
         .callTimeout(8, TimeUnit.SECONDS)
         .addInterceptor { chain ->
@@ -38,6 +44,7 @@ internal class HttpsProxyDns(endpoint: HttpUrl) : Dns, Closeable {
         .client(client)
         .url(endpoint)
         .post(true)
+        .systemDns(bootstrapDns)
         .build()
 
     override fun lookup(hostname: String): List<InetAddress> {

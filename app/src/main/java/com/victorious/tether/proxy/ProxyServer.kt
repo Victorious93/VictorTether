@@ -3,6 +3,7 @@ package com.victorious.tether.proxy
 import com.victorious.tether.data.Stats
 import okhttp3.Dns
 import java.io.BufferedInputStream
+import java.io.Closeable
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
@@ -16,7 +17,6 @@ import java.security.MessageDigest
 import java.util.Base64
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicBoolean
 
 class ProxyCredentials(val user: String, val pass: String)
 
@@ -37,38 +37,57 @@ class ProxyServer(
     /** Only tests turn this off, so they can use loopback echo servers as destinations. */
     private val blockLocalDestinations: Boolean = true,
     private val dns: Dns = Dns.SYSTEM,
+    private val openUpstreamSocket: () -> Socket = ::Socket,
 ) {
-    private val running = AtomicBoolean(false)
     private var server: ServerSocket? = null
+    // Each accepted connection owns at most one upstream socket.
+    private val connections = mutableMapOf<Socket, Socket?>()
     private val pool: ExecutorService = Executors.newCachedThreadPool { r ->
         Thread(r, "victorious-proxy").apply { isDaemon = true }
     }
 
+    @Synchronized
     @Throws(IOException::class)
     fun start() {
-        check(running.compareAndSet(false, true)) { "already running" }
+        check(server == null && !pool.isShutdown) { "proxy has already been started" }
         val ss = ServerSocket()
         try {
             ss.reuseAddress = true
             ss.bind(InetSocketAddress(port))
         } catch (e: IOException) {
-            running.set(false)
-            ss.close()
+            runCatching { ss.close() }
             throw e
         }
         server = ss
         pool.execute {
-            while (running.get()) {
+            while (!ss.isClosed) {
                 val client = try { ss.accept() } catch (_: IOException) { break }
-                pool.execute { handle(client) }
+                synchronized(this) {
+                    if (server == null) {
+                        runCatching { client.close() }
+                    } else {
+                        connections[client] = null
+                        pool.execute { handle(client) }
+                    }
+                }
             }
         }
     }
 
     fun stop() {
-        if (!running.compareAndSet(true, false)) return
-        runCatching { server?.close() }
-        pool.shutdownNow()
+        val sockets = synchronized(this) {
+            val listener = server ?: return
+            server = null
+            pool.shutdownNow()
+            buildList<Closeable> {
+                add(listener)
+                for ((client, upstream) in connections) {
+                    add(client)
+                    if (upstream != null) add(upstream)
+                }
+            }.also { connections.clear() }
+        }
+        sockets.forEach { runCatching { it.close() } }
     }
 
     // ---------------------------------------------------------------- connection entry
@@ -93,6 +112,8 @@ class ProxyServer(
         } catch (_: ProxyRefusal) {
             // Already answered the client inside the handler.
         } finally {
+            val upstream = synchronized(this) { connections.remove(client) }
+            runCatching { upstream?.close() }
             stats.connectionClosed()
         }
     }
@@ -122,7 +143,7 @@ class ProxyServer(
             val host = if (idx > 0) target.substring(0, idx).trim('[', ']') else target
             val destPort = if (idx > 0) target.substring(idx + 1).toIntOrNull() else null
             if (destPort == null || destPort !in 1..65535) { respond(output, 400, "Bad Request"); throw ProxyRefusal() }
-            val upstream = connectOrRespond(host, destPort) { code, msg -> respond(output, code, msg) }
+            val upstream = connectOrRespond(client, host, destPort) { code, msg -> respond(output, code, msg) }
             output.write("HTTP/1.1 200 Connection Established\r\n\r\n".toByteArray()); output.flush()
             pipe(client, input, output, upstream)
         } else {
@@ -132,7 +153,7 @@ class ProxyServer(
                 throw ProxyRefusal()
             }
             val destPort = if (uri.port > 0) uri.port else 80
-            val upstream = connectOrRespond(uri.host, destPort) { code, msg -> respond(output, code, msg) }
+            val upstream = connectOrRespond(client, uri.host, destPort) { code, msg -> respond(output, code, msg) }
             val path = buildString {
                 append(uri.rawPath.takeUnless { it.isNullOrEmpty() } ?: "/")
                 uri.rawQuery?.let { append('?').append(it) }
@@ -219,7 +240,7 @@ class ProxyServer(
         val destPort = din.readUnsignedShort()
         if (cmd != 0x01) { socksReply(output, 0x07); throw ProxyRefusal() } // CONNECT only; no BIND/UDP
 
-        val upstream = connectOrRespond(host, destPort) { code, _ ->
+        val upstream = connectOrRespond(client, host, destPort) { code, _ ->
             socksReply(output, if (code == 403) 0x02 else if (code == 504) 0x06 else 0x04)
         }
         socksReply(output, 0x00)
@@ -233,7 +254,7 @@ class ProxyServer(
     // ------------------------------------------------------------------ shared plumbing
 
     /** Resolves and connects, refusing local destinations; reports failures via [fail] then aborts. */
-    private fun connectOrRespond(host: String, destPort: Int, fail: (Int, String) -> Unit): Socket {
+    private fun connectOrRespond(client: Socket, host: String, destPort: Int, fail: (Int, String) -> Unit): Socket {
         val addr = try {
             dns.lookup(host).firstOrNull {
                 !blockLocalDestinations || (!it.isLoopbackAddress && !it.isAnyLocalAddress && !it.isMulticastAddress)
@@ -242,15 +263,22 @@ class ProxyServer(
         } catch (_: java.net.UnknownHostException) {
             fail(502, "Bad Gateway"); throw ProxyRefusal()
         }
-        val s = Socket()
         try {
+            val s = openUpstreamSocket()
+            synchronized(this) {
+                if (!connections.containsKey(client)) {
+                    runCatching { s.close() }
+                    throw ProxyRefusal()
+                }
+                connections[client] = s
+            }
             s.tcpNoDelay = true
             s.connect(InetSocketAddress(addr, destPort), CONNECT_TIMEOUT_MS)
             return s
-        } catch (e: SocketTimeoutException) {
-            runCatching { s.close() }; fail(504, "Gateway Timeout"); throw ProxyRefusal()
-        } catch (e: IOException) {
-            runCatching { s.close() }; fail(502, "Bad Gateway"); throw ProxyRefusal()
+        } catch (_: SocketTimeoutException) {
+            fail(504, "Gateway Timeout"); throw ProxyRefusal()
+        } catch (_: IOException) {
+            fail(502, "Bad Gateway"); throw ProxyRefusal()
         }
     }
 
@@ -258,18 +286,19 @@ class ProxyServer(
     private fun pipe(client: Socket, clientIn: InputStream, clientOut: OutputStream, upstream: Socket) {
         client.soTimeout = IDLE_TIMEOUT_MS
         upstream.soTimeout = IDLE_TIMEOUT_MS
-        upstream.use { up ->
-            val upIn = up.getInputStream()
-            val upOut = up.getOutputStream()
-            val uplink = pool.submit {
+        val upIn = upstream.getInputStream()
+        val upOut = upstream.getOutputStream()
+        val uplink = synchronized(this) {
+            if (server == null) return
+            pool.submit {
                 copy(clientIn, upOut) { stats.addUp(it.toLong()) }
-                runCatching { up.shutdownOutput() }
+                runCatching { upstream.shutdownOutput() }
             }
-            copy(upIn, clientOut) { stats.addDown(it.toLong()) }
-            runCatching { client.shutdownOutput() }
-            runCatching { uplink.get(IDLE_TIMEOUT_MS.toLong(), java.util.concurrent.TimeUnit.MILLISECONDS) }
-            uplink.cancel(true)
         }
+        copy(upIn, clientOut) { stats.addDown(it.toLong()) }
+        runCatching { client.shutdownOutput() }
+        runCatching { uplink.get(IDLE_TIMEOUT_MS.toLong(), java.util.concurrent.TimeUnit.MILLISECONDS) }
+        uplink.cancel(true)
     }
 
     private inline fun copy(src: InputStream, dst: OutputStream, onBytes: (Int) -> Unit) {

@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -33,6 +34,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -61,8 +63,10 @@ fun MainScreen(
     onConfig: (Config) -> Unit,
     onToggle: () -> Unit,
     onOpenSystemHotspot: () -> Unit,
+    onOpenMesh: (() -> Unit)? = null,
 ) {
-    val busy = status is Status.Running || status is Status.Starting
+    val stopping = status == Status.Stopping
+    val busy = status is Status.Running || status == Status.Starting || stopping
     Column(
         Modifier.background(Term.bg).statusBarsPadding().verticalScroll(rememberScrollState())
             .padding(16.dp),
@@ -76,16 +80,24 @@ fun MainScreen(
 
         Button(
             onClick = onToggle,
+            enabled = !stopping,
             modifier = Modifier.fillMaxWidth().height(56.dp),
             colors = ButtonDefaults.buttonColors(
                 containerColor = if (busy) Term.red else Term.green,
                 contentColor = Term.bg,
             ),
-        ) { Text(if (busy) "[ STOP ]" else "[ START ]", fontWeight = FontWeight.Bold) }
+        ) {
+            val label = when {
+                stopping -> "STOPPING…"
+                busy -> "[ STOP ]"
+                else -> "[ START ]"
+            }
+            Text(label, fontWeight = FontWeight.Bold)
+        }
 
         ModePanel(config, busy, onConfig)
         if (config.mode != Mode.PROXY_ONLY) HotspotPanel(config, busy, onConfig)
-        ProxyPanel(config, busy, onConfig)
+        ProxyPanel(config, busy, onConfig, onOpenMesh)
         WifiDirectToolsPanel(upstream, hasWifiPermission, onNeedWifiPermission)
         if (config.mode == Mode.PROXY_ONLY) {
             OutlinedButton(onClick = onOpenSystemHotspot, modifier = Modifier.fillMaxWidth()) {
@@ -116,6 +128,7 @@ private fun StatusPanel(status: Status, stats: StatsSnapshot) {
         when (status) {
             Status.Idle -> Text("OFFLINE", color = Term.dim)
             Status.Starting -> Text("STARTING…", color = Term.amber)
+            Status.Stopping -> Text("STOPPING…", color = Term.amber)
             is Status.Failed -> Text("FAILED: ${status.message}", color = Term.red)
             is Status.Running -> {
                 Text("ONLINE", fontWeight = FontWeight.Bold)
@@ -136,6 +149,7 @@ private fun StatusPanel(status: Status, stats: StatsSnapshot) {
                     }
                 }
                 if (status.config.proxyRuns) {
+                    if (status.config.requireProxyVpn) Line("ROUTE", "Proxy bound to VPN")
                     val ips = status.addresses
                     if (ips.isEmpty()) Line("PROXY", "port ${status.config.port} (no private IPv4 found)")
                     ips.forEach {
@@ -268,7 +282,7 @@ private fun HotspotPanel(config: Config, locked: Boolean, onConfig: (Config) -> 
 }
 
 @Composable
-private fun ProxyPanel(config: Config, locked: Boolean, onConfig: (Config) -> Unit) {
+private fun ProxyPanel(config: Config, locked: Boolean, onConfig: (Config) -> Unit, onOpenMesh: (() -> Unit)?) {
     val stealth = config.mode == Mode.STEALTH_ROOT
     Panel("PROXY") {
         if (stealth) {
@@ -278,7 +292,19 @@ private fun ProxyPanel(config: Config, locked: Boolean, onConfig: (Config) -> Un
             Field("Port", config.port.toString(), enabled = !locked, numeric = true) {
                 onConfig(config.copy(port = it.filter(Char::isDigit).take(5).toIntOrNull() ?: 0))
             }
-            val forced = config.mode == Mode.PROXY_ONLY
+            Toggle("Share VPN with proxy clients", config.requireProxyVpn, enabled = !locked) {
+                onConfig(config.copy(requireProxyVpn = it))
+            }
+            if (config.requireProxyVpn) {
+                Text(
+                    "Connect your VPN before starting. Clients need a proxy login. The session stops if the VPN drops.",
+                    style = MaterialTheme.typography.labelMedium,
+                )
+            }
+            if (onOpenMesh != null) {
+                OutlinedButton(onClick = onOpenMesh) { Text("Open Victorious Mesh") }
+            }
+            val forced = config.proxyAuthForced
             Toggle(
                 if (forced) "Require login (forced in this mode)" else "Require login",
                 config.authRequired, enabled = !locked && !forced,
@@ -340,10 +366,16 @@ private fun Field(label: String, value: String, enabled: Boolean, numeric: Boole
 
 @Composable
 private fun Toggle(label: String, checked: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+    Row(
+        modifier = Modifier.fillMaxWidth().toggleable(
+            value = checked, enabled = enabled, role = Role.Switch, onValueChange = onChange,
+        ),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
         Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
         Switch(
-            checked = checked, onCheckedChange = onChange, enabled = enabled,
+            checked = checked, onCheckedChange = null, enabled = enabled,
             colors = SwitchDefaults.colors(
                 checkedThumbColor = Term.bg, checkedTrackColor = Term.green,
                 uncheckedThumbColor = Term.dim, uncheckedTrackColor = Term.panel,
