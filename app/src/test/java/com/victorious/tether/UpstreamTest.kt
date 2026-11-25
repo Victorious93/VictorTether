@@ -53,3 +53,23 @@ class UpstreamTest {
         assertTrue(Upstream.assess(wifi(true), Mode.STEALTH_ROOT).any { "refuse system tethering" in it.text })
     }
 }
+
+class WifiDirectModeTest {
+    @Test fun wifiDirectOverWifiNeverBlocksEvenWithoutApConcurrency() {
+        val info = UpstreamInfo(Transport.WIFI, true, staApConcurrent = false)
+        val a = Upstream.assess(info, Mode.WIFI_DIRECT)
+        assertFalse(Upstream.blocking(a))
+        assertTrue(a.any { "Wi-Fi Direct normally keeps your Wi-Fi" in it.text })
+    }
+
+    @Test fun networkNameGetsDirectPrefixAndFits32Bytes() {
+        assertEquals("DIRECT-vt-Home", com.victorious.tether.hotspot.WifiDirect.networkNameFor("Home"))
+        assertEquals("DIRECT-ab-Mine", com.victorious.tether.hotspot.WifiDirect.networkNameFor("DIRECT-ab-Mine"))
+        assertTrue(com.victorious.tether.hotspot.WifiDirect.networkNameFor("x".repeat(60)).toByteArray().size <= 32)
+    }
+
+    @Test fun wifiDirectModeValidatesCredentialsLikeStealth() {
+        val c = com.victorious.tether.data.Config(mode = Mode.WIFI_DIRECT, ssid = "n", password = "short")
+        assertTrue(c.validate().any { "password" in it })
+    }
+}
