@@ -10,8 +10,8 @@ enum class Mode(val label: String, val blurb: String) {
         "Android LocalOnlyHotspot + built-in proxy. SSID is visible and chosen by Android."
     ),
     STEALTH_ROOT(
-        "Stealth · root",
-        "Real tethering via a root helper. Lets you set the SSID, password and HIDE the SSID."
+        "Stealth · root/Shizuku",
+        "Real tethering via a root or Shizuku helper. Lets you set the SSID, password and HIDE the SSID."
     ),
     PROXY_ONLY(
         "Proxy only",
@@ -19,8 +19,12 @@ enum class Mode(val label: String, val blurb: String) {
     ),
 }
 
+/** What runs the stealth helper. Shizuku avoids needing root. */
+enum class Privilege(val label: String) { ROOT("Root (su)"), SHIZUKU("Shizuku") }
+
 data class Config(
     val mode: Mode = Mode.PROXY_LOCAL,
+    val privilege: Privilege = Privilege.ROOT,
     val ssid: String = "Victorious-Net",
     val password: String = "",
     val hiddenSsid: Boolean = true,
@@ -60,6 +64,7 @@ class ConfigStore(context: Context) {
         val d = Config()
         val cfg = Config(
             mode = runCatching { Mode.valueOf(sp.getString("mode", d.mode.name)!!) }.getOrDefault(d.mode),
+            privilege = runCatching { Privilege.valueOf(sp.getString("privilege", d.privilege.name)!!) }.getOrDefault(d.privilege),
             ssid = sp.getString("ssid", d.ssid) ?: d.ssid,
             password = sp.getString("password", null) ?: randomSecret(12),
             hiddenSsid = sp.getBoolean("hidden", d.hiddenSsid),
@@ -77,7 +82,7 @@ class ConfigStore(context: Context) {
 
     fun save(c: Config) {
         sp.edit()
-            .putString("mode", c.mode.name).putString("ssid", c.ssid).putString("password", c.password)
+            .putString("mode", c.mode.name).putString("privilege", c.privilege.name).putString("ssid", c.ssid).putString("password", c.password)
             .putBoolean("hidden", c.hiddenSsid).putBoolean("proxyEnabled", c.proxyEnabled)
             .putInt("port", c.port).putBoolean("requireProxyAuth", c.requireProxyAuth)
             .putString("proxyUser", c.proxyUser).putString("proxyPass", c.proxyPass)
