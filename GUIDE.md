@@ -1,6 +1,6 @@
 # Victorious Tether — Victorious Framework living guide
 
-_Last synchronised with code: v0.1.0 + Shizuku backend. Update this file in the same commit as any behaviour change._
+_Last synchronised with code: v0.1.0 + Shizuku backend + upstream check. Update this file in the same commit as any behaviour change._
 
 ## 1. Status
 
@@ -11,6 +11,7 @@ _Last synchronised with code: v0.1.0 + Shizuku backend. Update this file in the 
 | Finished | Debug APK builds, `lintDebug` clean |
 | In Progress | Nothing |
 | Finished (unverified on device) | Shizuku backend: Stealth without root |
+| Finished (logic tested, UI unverified) | Upstream check: shows what you are sharing and warns before it fails — **21 JVM tests pass** |
 | Deferred | Per-client list, upstream-network pinning, release signing |
 | Abandoned | Copying/decompiling the reference app (see §6) |
 
@@ -62,6 +63,18 @@ Known risks: OEM ROMs may rename or restrict these APIs (Samsung especially) _[L
 The open question _[Guessing]_: whether the shell user holds the permissions `setSoftApConfiguration` and `startTethering` need (`NETWORK_SETTINGS` / `TETHER_PRIVILEGED`). `SoftApControl` acts as package `com.android.shell` when running as shell, which is the usual way to pass the package/uid check, but I could not confirm either point without a device. If it fails you will see `SecurityException: …` in the app. That message tells us exactly which permission is missing; if it is a hard block, Shizuku cannot do this on that device and root is the only route.
 
 Flow: Shizuku app running (Wireless debugging or root) → choose **Shizuku** under Stealth → first start asks Shizuku for permission → hotspot starts.
+
+## 4c. Upstream check
+
+`util/Upstream.kt` reads the phone's default network (`ConnectivityManager`: transport and whether Android has validated internet) and asks the platform `WifiManager.isStaApConcurrencySupported()` whether Wi-Fi client + hotspot can run together. `Upstream.assess()` is pure logic (unit-tested) that turns that into OK/INFO/WARN/FAIL lines shown in the UPSTREAM panel, live while the app is open.
+
+- Sharing Wi-Fi in a hotspot mode on a phone that reports **no** concurrency → FAIL (starting will probably drop the Wi-Fi being shared).
+- Concurrency unknown → WARN. No connection → FAIL. Unconfirmed internet (login page, weak signal) → WARN.
+- Proxy only is exempt from the concurrency rule because you supply the link.
+- It **warns but never blocks** the start button: the platform's answer can be wrong on some ROMs _[Likely]_, so the user decides.
+- If the connection vanishes mid-session the panel says so.
+
+Not covered: the app cannot tell which Wi-Fi network (SSID) is the source without a location permission, so it reports only the transport.
 
 ## 5. Security decisions
 

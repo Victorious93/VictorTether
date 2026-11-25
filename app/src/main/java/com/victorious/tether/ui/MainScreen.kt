@@ -43,13 +43,18 @@ import com.victorious.tether.data.Privilege
 import com.victorious.tether.data.Status
 import com.victorious.tether.data.StatsSnapshot
 import com.victorious.tether.util.Net
+import com.victorious.tether.util.Advice
 import com.victorious.tether.util.Qr
+import com.victorious.tether.util.Severity
+import com.victorious.tether.util.Upstream
+import com.victorious.tether.util.UpstreamInfo
 
 @Composable
 fun MainScreen(
     config: Config,
     status: Status,
     stats: StatsSnapshot,
+    upstream: UpstreamInfo,
     onConfig: (Config) -> Unit,
     onToggle: () -> Unit,
     onOpenSystemHotspot: () -> Unit,
@@ -64,6 +69,7 @@ fun MainScreen(
         Text("Victorious Framework · proxy tether + stealth AP", style = MaterialTheme.typography.labelMedium)
 
         StatusPanel(status, stats)
+        UpstreamPanel(upstream, config, status)
 
         Button(
             onClick = onToggle,
@@ -139,6 +145,30 @@ private fun StatusPanel(status: Status, stats: StatsSnapshot) {
                 Line("CONN", "${stats.activeConnections} active / ${stats.totalConnections} total")
                 Line("UP", Net.humanBytes(stats.bytesUp))
                 Line("DOWN", Net.humanBytes(stats.bytesDown))
+            }
+        }
+    }
+}
+
+@Composable
+private fun UpstreamPanel(info: UpstreamInfo, config: Config, status: Status) {
+    val advice = Upstream.assess(info, config.mode).toMutableList()
+    // Only meaningful once running: the shared connection vanishing mid-session.
+    if (status is Status.Running && info.transport == com.victorious.tether.util.Transport.NONE) {
+        advice.add(0, Advice(Severity.BAD, "The connection you were sharing has dropped."))
+    }
+    Panel("UPSTREAM  (what you are sharing)") {
+        Line("VIA", info.transport.label + if (info.validated) "" else "  (unconfirmed)")
+        advice.forEach { a ->
+            val (tag, color) = when (a.severity) {
+                Severity.OK -> "ok  " to Term.green
+                Severity.INFO -> "info" to Term.dim
+                Severity.WARN -> "warn" to Term.amber
+                Severity.BAD -> "FAIL" to Term.red
+            }
+            Row {
+                Text("[$tag] ", style = MaterialTheme.typography.bodyMedium, color = color)
+                Text(a.text, style = MaterialTheme.typography.bodyMedium, color = color)
             }
         }
     }
