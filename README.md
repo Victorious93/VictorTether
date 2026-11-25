@@ -14,7 +14,7 @@
 [![Build](https://github.com/Victorious93/VictorTether/actions/workflows/build.yml/badge.svg)](https://github.com/Victorious93/VictorTether/actions/workflows/build.yml)
 ![Platform](https://img.shields.io/badge/Android-11%2B-39FF14?logo=android&logoColor=black)
 ![Kotlin](https://img.shields.io/badge/Kotlin-Compose-0A0F0A?logo=kotlin&logoColor=39FF14)
-![Tests](https://img.shields.io/badge/JVM%20tests-24%20passing-39FF14)
+![Tests](https://img.shields.io/badge/JVM%20tests-25%20passing-39FF14)
 ![Device tested](https://img.shields.io/badge/on--device-not%20yet%20verified-FFB000)
 
 </div>

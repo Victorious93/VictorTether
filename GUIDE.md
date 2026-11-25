@@ -12,7 +12,7 @@ _Last synchronised with code: v0.1.0 + Shizuku backend + upstream check + Wi-Fi 
 | In Progress | Nothing |
 | Finished (unverified on device) | Shizuku backend: Stealth without root |
 | Finished (logic tested, UI unverified) | Upstream check: shows what you are sharing and warns before it fails — **21 JVM tests pass** |
-| Finished (unverified on device) | Wi-Fi Direct mode + tools panel — **24 JVM tests pass** (naming, validation, advice logic only) |
+| Finished (unverified on device) | Wi-Fi Direct mode + tools panel — **25 JVM tests pass** (naming, validation, advice and group-loss rule only); session now stops if the group disappears |
 | Deferred | Per-client list for proxy modes, upstream-network pinning, release signing |
 | Abandoned | Copying/decompiling the reference app (see §6) |
 
@@ -86,7 +86,7 @@ Why it exists: `LocalOnlyHotspot` and tethering often cannot run while the phone
 
 Tools panel: **Check support** (hardware feature, P2P switched on, hotspot+Wi-Fi concurrency, current source), **Scan nearby** (5 s peer discovery), **Show group & members** (group name, owner/member, member list), **Remove group**. Android hides real hardware addresses from apps, so addresses may be placeholders.
 
-Not done: the app is not told if the group is removed by the system or the user while running (no P2P broadcast receiver yet), so the session can keep showing ONLINE after the group is gone. Use **Show group & members** to check.
+Group loss: while a Wi-Fi Direct session is running, `WifiDirectBackend` listens for `WIFI_P2P_CONNECTION_CHANGED_ACTION`. If the system reports the group is no longer formed, it waits 1.5 s, confirms with `requestGroupInfo`, and only then stops the session (so a flickering broadcast does not end it). Events during our own setup and teardown are ignored. The decision rule `shouldCheckForLoss` is unit-tested; the broadcast path itself is not verified on a device. Lesson recorded: P2P callbacks arrive on the main looper, so never block the main thread waiting for them.
 
 ## 5. Security decisions
 
@@ -115,6 +115,5 @@ CI (`.github/workflows/build.yml`) does the same and uploads the APK. Bump `vers
 2. Confirm on a device that the shell user can run SoftApControl (see §4b); add a fallback message if not.
 3. Pin upstream traffic to a chosen network (cellular vs Wi-Fi) via `ConnectivityManager.bindProcessToNetwork`.
 4. Connected-client list and per-connection log.
-5. Listen for `WIFI_P2P_CONNECTION_CHANGED_ACTION` so the session stops when the group disappears.
-6. SOCKS5 UDP ASSOCIATE (currently refused with reply 0x07).
-7. Release signing + reproducible build notes.
+5. SOCKS5 UDP ASSOCIATE (currently refused with reply 0x07).
+6. Release signing + reproducible build notes.
