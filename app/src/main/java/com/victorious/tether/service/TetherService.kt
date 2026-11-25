@@ -18,12 +18,14 @@ import com.victorious.tether.data.Config
 import com.victorious.tether.data.ConfigStore
 import com.victorious.tether.data.HotspotInfo
 import com.victorious.tether.data.Mode
+import com.victorious.tether.data.Privilege
 import com.victorious.tether.data.Stats
 import com.victorious.tether.data.Status
 import com.victorious.tether.data.TetherState
 import com.victorious.tether.hotspot.HotspotBackend
 import com.victorious.tether.hotspot.LocalOnlyBackend
 import com.victorious.tether.hotspot.RootBackend
+import com.victorious.tether.hotspot.ShizukuBackend
 import com.victorious.tether.proxy.ProxyCredentials
 import com.victorious.tether.proxy.ProxyServer
 import com.victorious.tether.util.Net
@@ -95,7 +97,7 @@ class TetherService : Service() {
     private suspend fun bringUpHotspot(config: Config): HotspotInfo? {
         val b: HotspotBackend = when (config.mode) {
             Mode.PROXY_LOCAL -> LocalOnlyBackend(this) { shutdown() }
-            Mode.STEALTH_ROOT -> RootBackend(this)
+            Mode.STEALTH_ROOT -> if (config.privilege == Privilege.SHIZUKU) ShizukuBackend(this) else RootBackend(this)
             Mode.PROXY_ONLY -> return null
         }
         backend = b

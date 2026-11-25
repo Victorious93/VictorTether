@@ -39,6 +39,7 @@ import androidx.compose.ui.unit.dp
 import com.victorious.tether.data.Config
 import com.victorious.tether.data.ConfigStore
 import com.victorious.tether.data.Mode
+import com.victorious.tether.data.Privilege
 import com.victorious.tether.data.Status
 import com.victorious.tether.data.StatsSnapshot
 import com.victorious.tether.util.Net
@@ -182,6 +183,28 @@ private fun HotspotPanel(config: Config, locked: Boolean, onConfig: (Config) -> 
                 style = MaterialTheme.typography.labelMedium, color = Term.amber,
             )
         }
+        if (stealth) {
+            Text("Privilege source", style = MaterialTheme.typography.labelMedium)
+            Privilege.entries.forEach { p ->
+                FilterChip(
+                    selected = config.privilege == p,
+                    enabled = !locked,
+                    onClick = { onConfig(config.copy(privilege = p)) },
+                    label = { Text(p.label) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = Term.line, selectedLabelColor = Term.green,
+                        labelColor = Term.dim, disabledLabelColor = Term.dim,
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            Text(
+                if (config.privilege == Privilege.SHIZUKU)
+                    "Needs the Shizuku app installed and running. No root required; you grant this app access once."
+                else "Needs a rooted device; you will get a root prompt.",
+                style = MaterialTheme.typography.labelMedium,
+            )
+        }
         Field("SSID", config.ssid, enabled = stealth && !locked) { onConfig(config.copy(ssid = it.take(32))) }
         Field("Password (8–63)", config.password, enabled = stealth && !locked) { onConfig(config.copy(password = it.take(63))) }
         OutlinedButton(
@@ -193,7 +216,7 @@ private fun HotspotPanel(config: Config, locked: Boolean, onConfig: (Config) -> 
         }
         if (stealth) {
             Text(
-                "Needs root. Hidden SSIDs stop casual discovery only: the name is still sent by your " +
+                "Hidden SSIDs stop casual discovery only: the name is still sent by your " +
                     "own devices when they connect. Not a substitute for a strong password.",
                 style = MaterialTheme.typography.labelMedium,
             )

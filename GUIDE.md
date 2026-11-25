@@ -1,6 +1,6 @@
 # Victorious Tether — Victorious Framework living guide
 
-_Last synchronised with code: v0.1.0. Update this file in the same commit as any behaviour change._
+_Last synchronised with code: v0.1.0 + Shizuku backend. Update this file in the same commit as any behaviour change._
 
 ## 1. Status
 
@@ -10,7 +10,8 @@ _Last synchronised with code: v0.1.0. Update this file in the same commit as any
 | Finished | Config validation, Wi-Fi QR payload, foreground service, Quick Settings tile, Compose UI |
 | Finished | Debug APK builds, `lintDebug` clean |
 | In Progress | Nothing |
-| Deferred | Shizuku backend, per-client list, upstream-network pinning, release signing |
+| Finished (unverified on device) | Shizuku backend: Stealth without root |
+| Deferred | Per-client list, upstream-network pinning, release signing |
 | Abandoned | Copying/decompiling the reference app (see §6) |
 
 **NOT verified on a real phone:** LocalOnlyHotspot start, the root helper, hidden-SSID behaviour, the tile, the notification. No device or emulator was available. Treat §4 as _[Likely]_, not _[Certain]_, until you have run it.
@@ -20,7 +21,7 @@ _Last synchronised with code: v0.1.0. Update this file in the same commit as any
 | Mode | Root | SSID visible | You choose SSID/password | Internet path for clients |
 |---|---|---|---|---|
 | Proxy · no root | no | **yes** (platform limit) | no (Android picks) | client must set HTTP/SOCKS proxy to `ip:port` |
-| Stealth · root | yes | **hidden** | yes | native tethering (NAT) — proxy optional |
+| Stealth · root **or Shizuku** | root _or_ Shizuku | **hidden** | yes | native tethering (NAT) — proxy optional |
 | Proxy only | no | n/a | n/a | you bring the link (system hotspot, USB…); login forced |
 
 Why hidden SSID needs root: `SoftApConfiguration.Builder#setHiddenSsid` and `WifiManager#setSoftApConfiguration` are `@SystemApi`. Unprivileged apps can only call `startLocalOnlyHotspot`, which accepts no configuration. _[Certain]_ for the public-API side; the root route is _[Likely]_ (see §4).
@@ -33,7 +34,8 @@ MainActivity (Compose UI) ──► ConfigStore (SharedPreferences)
         ▼                                  │ load()
 TetherService (foreground, connectedDevice)│
    ├─ HotspotBackend ── LocalOnlyBackend   (WifiManager.startLocalOnlyHotspot)
-   │                 └─ RootBackend ──su──► SoftApMain (app_process, uid 0, reflection)
+   │                 ├─ RootBackend ──su──► SoftApMain (app_process, uid 0) ─┐
+   │                 └─ ShizukuBackend ─► SoftApUserService (shell uid) ────┴► SoftApControl (reflection)
    ├─ ProxyServer  (one port, sniffs 0x05 → SOCKS5 else HTTP)
    └─ TetherState  (StateFlow: Status + StatsSnapshot) ──► UI, TetherTile
 ```
@@ -52,6 +54,14 @@ Key files: `proxy/ProxyServer.kt`, `hotspot/*Backend.kt`, `root/SoftApMain.kt`, 
 Known risks: OEM ROMs may rename or restrict these APIs (Samsung especially) _[Likely]_; Android 15+ tethering-module changes could break the `startTethering(int, Executor, callback)` overload _[Guessing]_. If it fails, the UI shows the exact `ERR` line — start debugging there. Manual test: `adb shell su -c "CLASSPATH=$(pm path com.victorious.tether | cut -d: -f2) app_process /system/bin com.victorious.tether.root.SoftApMain stop"`.
 
 **Hidden SSID is obscurity, not security.** Beacons still go out with an empty SSID, and the name is revealed when a client associates. Keep a strong WPA2 password. Clients join by scanning the in-app QR (it carries `H:true`) or by adding the network manually with "hidden network" enabled.
+
+## 4b. Shizuku backend (also unverified)
+
+`ShizukuBackend` binds `SoftApUserService` through `Shizuku.bindUserService`. Shizuku starts that class in its own process as the **shell** user, loaded from this APK, and the app talks to it over a bare Binder (codes `TX_START`/`TX_STOP`, one-string reply `OK` or `ERR …`). Both helpers call the same `SoftApControl`, so behaviour matches the root path.
+
+The open question _[Guessing]_: whether the shell user holds the permissions `setSoftApConfiguration` and `startTethering` need (`NETWORK_SETTINGS` / `TETHER_PRIVILEGED`). `SoftApControl` acts as package `com.android.shell` when running as shell, which is the usual way to pass the package/uid check, but I could not confirm either point without a device. If it fails you will see `SecurityException: …` in the app. That message tells us exactly which permission is missing; if it is a hard block, Shizuku cannot do this on that device and root is the only route.
+
+Flow: Shizuku app running (Wireless debugging or root) → choose **Shizuku** under Stealth → first start asks Shizuku for permission → hotspot starts.
 
 ## 5. Security decisions
 
@@ -77,7 +87,7 @@ CI (`.github/workflows/build.yml`) does the same and uploads the APK. Bump `vers
 ## 8. Remaining work
 
 1. Device-test every path in §1's "not verified" list; fix what breaks.
-2. Shizuku backend so Stealth works without root (same `SoftApMain`, different launcher).
+2. Confirm on a device that the shell user can run SoftApControl (see §4b); add a fallback message if not.
 3. Pin upstream traffic to a chosen network (cellular vs Wi-Fi) via `ConnectivityManager.bindProcessToNetwork`.
 4. Connected-client list and per-connection log.
 5. SOCKS5 UDP ASSOCIATE (currently refused with reply 0x07).

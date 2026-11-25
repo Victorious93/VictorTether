@@ -26,7 +26,7 @@
 | | |
 |---|---|
 | **Proxy tether, no root** | Starts Android's LocalOnlyHotspot and serves an HTTP / CONNECT / SOCKS5 proxy on one port. |
-| **Stealth mode (root)** | Brings up a real WPA2 hotspot where *you* choose the SSID and password, and can **hide the SSID**. |
+| **Stealth mode (root or Shizuku)** | Brings up a real WPA2 hotspot where *you* choose the SSID and password, and can **hide the SSID**. Uses root, or Shizuku so no root is needed. |
 | **Proxy only** | Runs just the proxy on a hotspot, Wi-Fi or USB link you already have. Login is forced. |
 | **Join by QR** | The Wi-Fi QR code carries the hidden-network flag, so a phone can scan its way onto a hidden SSID. |
 | **Quality of life** | Foreground service, Quick Settings tile, live traffic counters, auto-stop timer, generated passwords. |
@@ -39,12 +39,12 @@
 | Mode | Root | SSID | You set SSID / password | How clients get internet |
 |---|:---:|---|:---:|---|
 | **Proxy · no root** | no | visible (Android's limit) | no | set an HTTP or SOCKS5 proxy to `ip:port` |
-| **Stealth · root** | yes | **hidden** | yes | normal tethering (NAT), proxy optional |
+| **Stealth · root / Shizuku** | root _or_ Shizuku | **hidden** | yes | normal tethering (NAT), proxy optional |
 | **Proxy only** | no | n/a | n/a | you supply the link; proxy login required |
 
-### Why hiding the SSID needs root
+### Why hiding the SSID needs root or Shizuku
 
-Android only gives ordinary apps `startLocalOnlyHotspot`, which accepts no configuration. Setting a hidden SSID uses `SoftApConfiguration` and `WifiManager#setSoftApConfiguration`, both system-only. Stealth mode therefore runs a small helper as root (via `su` and `app_process`) that calls them.
+Android only gives ordinary apps `startLocalOnlyHotspot`, which accepts no configuration. Setting a hidden SSID uses `SoftApConfiguration` and `WifiManager#setSoftApConfiguration`, both system-only. Stealth mode therefore runs a small helper with higher privileges that calls them: as root (via `su` and `app_process`), or as the shell user through [Shizuku](https://shizuku.rikka.app/), which needs no root. The Shizuku route is new and unverified on hardware.
 
 > A hidden SSID is obscurity, not security. Beacons still go out with an empty name, and the name is revealed when a client associates. Keep a strong WPA2 password.
 
@@ -53,7 +53,7 @@ Android only gives ordinary apps `startLocalOnlyHotspot`, which accepts no confi
 1. Install `Victorious-Tether-0.1.0-debug.apk` (from the CI run's artifacts, or build it below).
 2. Open the app, pick a mode, and tap **[ START ]**. Grant the Wi-Fi / Nearby-devices and notification prompts.
 3. **Proxy · no root:** join the hotspot shown, then set your device's HTTP or SOCKS5 proxy to the `PROXY*` address and port.
-4. **Stealth · root:** set SSID and password, turn on **Hide SSID**, start, and join by scanning the QR code, or add the network manually with *hidden network* enabled.
+4. **Stealth:** pick *Root* or *Shizuku* (Shizuku must be running), set SSID and password, turn on **Hide SSID**, start, and join by scanning the QR code, or add the network manually with *hidden network* enabled.
 
 ## Build from source
 
@@ -75,7 +75,8 @@ MainActivity (Compose) ──► ConfigStore
         ▼
 TetherService (foreground)
    ├─ HotspotBackend ─┬─ LocalOnlyBackend   public WifiManager API
-   │                  └─ RootBackend ─su─►  SoftApMain (uid 0, reflection)
+   │                  ├─ RootBackend ─su─►  SoftApMain (uid 0) ──┐
+   │                  └─ ShizukuBackend ─►  SoftApUserService ───┴─► SoftApControl
    ├─ ProxyServer     one port: 0x05 → SOCKS5, otherwise HTTP
    └─ TetherState     StateFlow ──► UI and Quick Settings tile
 ```
@@ -91,7 +92,7 @@ TetherService (foreground)
 ## Roadmap
 
 - [ ] On-device verification of every path (see GUIDE.md §1)
-- [ ] Shizuku backend, so Stealth works without root
+- [ ] Verify the Shizuku backend on a device (code is in; shell-user permissions unconfirmed)
 - [ ] Pin upstream traffic to cellular or Wi-Fi
 - [ ] Connected-client list and per-connection log
 - [ ] SOCKS5 UDP ASSOCIATE

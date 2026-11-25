@@ -20,6 +20,9 @@ import androidx.core.content.ContextCompat
 import com.victorious.tether.data.Config
 import com.victorious.tether.data.ConfigStore
 import com.victorious.tether.data.Mode
+import com.victorious.tether.data.Privilege
+import com.victorious.tether.data.Status
+import rikka.shizuku.Shizuku
 import com.victorious.tether.data.TetherState
 import com.victorious.tether.service.TetherService
 import com.victorious.tether.ui.MainScreen
@@ -48,7 +51,7 @@ class MainActivity : ComponentActivity() {
             val needed = requiredPermissions(config)
             // Notification permission is optional for function; Wi-Fi permission is not.
             val wifiOk = needed.filter { it != Manifest.permission.POST_NOTIFICATIONS }.all { result[it] == true || granted(it) }
-            if (wifiOk) TetherService.start(this)
+            if (wifiOk) startChecked(config)
         }
 
         MainScreen(
@@ -57,9 +60,9 @@ class MainActivity : ComponentActivity() {
             stats = stats,
             onConfig = { config = it; store.save(it) },
             onToggle = {
-                if (status is com.victorious.tether.data.Status.Idle || status is com.victorious.tether.data.Status.Failed) {
+                if (status is Status.Idle || status is Status.Failed) {
                     val missing = requiredPermissions(config).filterNot { granted(it) }
-                    if (missing.isEmpty()) TetherService.start(this) else permissionLauncher.launch(missing.toTypedArray())
+                    if (missing.isEmpty()) startChecked(config) else permissionLauncher.launch(missing.toTypedArray())
                 } else {
                     TetherService.stop(this)
                 }
@@ -69,6 +72,34 @@ class MainActivity : ComponentActivity() {
             },
         )
     }
+
+    /** Starts the service, first making sure Shizuku is usable when that is the chosen privilege source. */
+    private fun startChecked(config: Config) {
+        if (config.mode != Mode.STEALTH_ROOT || config.privilege != Privilege.SHIZUKU) {
+            TetherService.start(this); return
+        }
+        val fail = { msg: String -> TetherState.set(Status.Failed(msg)) }
+        if (!Shizuku.pingBinder()) {
+            fail("Shizuku is not running. Install it, start it (Wireless debugging or root), then try again."); return
+        }
+        if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
+            TetherService.start(this); return
+        }
+        if (Shizuku.shouldShowRequestPermissionRationale()) {
+            fail("Shizuku access was denied. Allow Victorious Tether inside the Shizuku app."); return
+        }
+        val listener = object : Shizuku.OnRequestPermissionResultListener {
+            override fun onRequestPermissionResult(requestCode: Int, grantResult: Int) {
+                Shizuku.removeRequestPermissionResultListener(this)
+                if (grantResult == PackageManager.PERMISSION_GRANTED) TetherService.start(this@MainActivity)
+                else fail("Shizuku permission was not granted")
+            }
+        }
+        Shizuku.addRequestPermissionResultListener(listener)
+        Shizuku.requestPermission(SHIZUKU_REQUEST)
+    }
+
+    private companion object { const val SHIZUKU_REQUEST = 4242 }
 
     private fun granted(p: String) = ContextCompat.checkSelfPermission(this, p) == PackageManager.PERMISSION_GRANTED
 
