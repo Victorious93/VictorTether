@@ -3,54 +3,65 @@ package com.victorious.tether.ui
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import com.victorious.tether.R
 import com.victorious.tether.data.Config
-import com.victorious.tether.data.ConfigStore
 import com.victorious.tether.data.Mode
-import com.victorious.tether.data.Privilege
-import com.victorious.tether.data.ProxyDnsMode
-import com.victorious.tether.data.Status
 import com.victorious.tether.data.StatsSnapshot
+import com.victorious.tether.data.Status
 import com.victorious.tether.util.Net
-import com.victorious.tether.util.Advice
 import com.victorious.tether.util.Qr
 import com.victorious.tether.util.Severity
 import com.victorious.tether.util.Upstream
 import com.victorious.tether.util.UpstreamInfo
+
+private enum class Screen(val title: String) {
+    CONNECT("Connect"), SETTINGS("Settings"), TOOLS("Tools"),
+}
 
 @Composable
 fun MainScreen(
@@ -65,321 +76,240 @@ fun MainScreen(
     onOpenSystemHotspot: () -> Unit,
     onOpenMesh: (() -> Unit)? = null,
 ) {
-    val stopping = status == Status.Stopping
-    val busy = status is Status.Running || status == Status.Starting || stopping
-    Column(
-        Modifier.background(Term.bg).statusBarsPadding().verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        Text("> VICTORIOUS TETHER_", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        Text("Victorious Framework · proxy tether + stealth AP", style = MaterialTheme.typography.labelMedium)
+    var screen by rememberSaveable { mutableStateOf(Screen.CONNECT) }
+    val screenState = rememberSaveableStateHolder()
+    val locked = status is Status.Running || status == Status.Starting || status == Status.Stopping
+    val colors = MaterialTheme.colorScheme
 
-        StatusPanel(status, stats)
-        UpstreamPanel(upstream, config, status)
-
-        Button(
-            onClick = onToggle,
-            enabled = !stopping,
-            modifier = Modifier.fillMaxWidth().height(56.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = if (busy) Term.red else Term.green,
-                contentColor = Term.bg,
-            ),
-        ) {
-            val label = when {
-                stopping -> "STOPPING…"
-                busy -> "[ STOP ]"
-                else -> "[ START ]"
-            }
-            Text(label, fontWeight = FontWeight.Bold)
-        }
-
-        ModePanel(config, busy, onConfig)
-        if (config.mode != Mode.PROXY_ONLY) HotspotPanel(config, busy, onConfig)
-        ProxyPanel(config, busy, onConfig, onOpenMesh)
-        WifiDirectToolsPanel(upstream, hasWifiPermission, onNeedWifiPermission)
-        if (config.mode == Mode.PROXY_ONLY) {
-            OutlinedButton(onClick = onOpenSystemHotspot, modifier = Modifier.fillMaxWidth()) {
-                Text("Open system wireless settings")
-            }
-        }
-        Spacer(Modifier.height(24.dp))
-    }
-}
-
-// ------------------------------------------------------------------------------ panels
-
-@Composable
-internal fun Panel(title: String, content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
-    Column(
-        Modifier.fillMaxWidth().border(BorderStroke(1.dp, Term.line), RoundedCornerShape(6.dp))
-            .background(Term.panel, RoundedCornerShape(6.dp)).padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Text("// $title", style = MaterialTheme.typography.labelMedium)
-        content()
-    }
-}
-
-@Composable
-private fun StatusPanel(status: Status, stats: StatsSnapshot) {
-    Panel("STATUS") {
-        when (status) {
-            Status.Idle -> Text("OFFLINE", color = Term.dim)
-            Status.Starting -> Text("STARTING…", color = Term.amber)
-            Status.Stopping -> Text("STOPPING…", color = Term.amber)
-            is Status.Failed -> Text("FAILED: ${status.message}", color = Term.red)
-            is Status.Running -> {
-                Text("ONLINE", fontWeight = FontWeight.Bold)
-                status.hotspot?.let { hs ->
-                    Line("SSID", hs.ssid + if (hs.hidden) "  (hidden)" else "")
-                    Line("PASS", hs.password)
-                    val qr = remember(hs) { Qr.render(Net.wifiQrPayload(hs.ssid, hs.password, hs.hidden)) }
-                    Image(
-                        qr.asImageBitmap(), contentDescription = "Wi-Fi QR code",
-                        modifier = Modifier.size(180.dp).align(Alignment.CenterHorizontally),
-                    )
-                    if (hs.hidden) {
-                        Text(
-                            "Hidden: the network will not appear in scans. Join by scanning this QR " +
-                                "or add the SSID manually (WPA2, 'hidden network' on).",
-                            style = MaterialTheme.typography.labelMedium,
+    Scaffold(
+        containerColor = colors.background,
+        contentColor = colors.onBackground,
+        topBar = {
+            Column(Modifier.background(colors.background).statusBarsPadding()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Surface(shape = RoundedCornerShape(12.dp), color = colors.primaryContainer) {
+                        Icon(
+                            painterResource(R.drawable.ic_launcher_foreground), contentDescription = null,
+                            modifier = Modifier.size(42.dp), tint = colors.primary,
+                        )
+                    }
+                    Text("Victorious Tether", style = MaterialTheme.typography.titleLarge)
+                }
+                TabRow(
+                    selectedTabIndex = screen.ordinal,
+                    containerColor = colors.background,
+                    contentColor = colors.primary,
+                    divider = { HorizontalDivider(color = colors.outlineVariant) },
+                ) {
+                    Screen.entries.forEach { tab ->
+                        Tab(
+                            selected = screen == tab,
+                            onClick = { screen = tab },
+                            text = { Text(tab.title) },
+                            unselectedContentColor = colors.onSurfaceVariant,
                         )
                     }
                 }
-                if (status.config.proxyRuns) {
-                    if (status.config.requireProxyVpn) Line("ROUTE", "Proxy bound to VPN")
-                    val ips = status.addresses
-                    if (ips.isEmpty()) Line("PROXY", "port ${status.config.port} (no private IPv4 found)")
-                    ips.forEach {
-                        Line(if (it.looksLikeAccessPoint) "PROXY*" else "PROXY", "${it.address}:${status.config.port}  [${it.iface}]")
-                    }
-                    Text(
-                        "HTTP + SOCKS5 on one port. * = interface that looks like the hotspot (heuristic).",
-                        style = MaterialTheme.typography.labelMedium,
-                    )
-                }
-                Line("CONN", "${stats.activeConnections} active / ${stats.totalConnections} total")
-                Line("UP", Net.humanBytes(stats.bytesUp))
-                Line("DOWN", Net.humanBytes(stats.bytesDown))
             }
-        }
-    }
-}
-
-@Composable
-private fun UpstreamPanel(info: UpstreamInfo, config: Config, status: Status) {
-    val advice = Upstream.assess(info, config.mode).toMutableList()
-    // Only meaningful once running: the shared connection vanishing mid-session.
-    if (status is Status.Running && info.transport == com.victorious.tether.util.Transport.NONE) {
-        advice.add(0, Advice(Severity.BAD, "The connection you were sharing has dropped."))
-    }
-    Panel("UPSTREAM  (what you are sharing)") {
-        Line("VIA", info.transport.label + if (info.validated) "" else "  (unconfirmed)")
-        advice.forEach { a ->
-            val (tag, color) = when (a.severity) {
-                Severity.OK -> "ok  " to Term.green
-                Severity.INFO -> "info" to Term.dim
-                Severity.WARN -> "warn" to Term.amber
-                Severity.BAD -> "FAIL" to Term.red
-            }
-            Row {
-                Text("[$tag] ", style = MaterialTheme.typography.bodyMedium, color = color)
-                Text(a.text, style = MaterialTheme.typography.bodyMedium, color = color)
-            }
-        }
-    }
-}
-
-@Composable
-internal fun Line(k: String, v: String) {
-    Row {
-        Text(k.padEnd(7), style = MaterialTheme.typography.bodyMedium, color = Term.dim)
-        Text(v, style = MaterialTheme.typography.bodyMedium)
-    }
-}
-
-@Composable
-private fun ModePanel(config: Config, locked: Boolean, onConfig: (Config) -> Unit) {
-    Panel("MODE") {
-        Mode.entries.forEach { m ->
-            FilterChip(
-                selected = config.mode == m,
-                enabled = !locked,
-                onClick = { onConfig(config.copy(mode = m)) },
-                label = { Text(m.label) },
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = Term.line, selectedLabelColor = Term.green,
-                    labelColor = Term.dim, disabledLabelColor = Term.dim,
-                ),
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
-        Text(config.mode.blurb, style = MaterialTheme.typography.labelMedium)
-    }
-}
-
-@Composable
-private fun HotspotPanel(config: Config, locked: Boolean, onConfig: (Config) -> Unit) {
-    val stealth = config.mode == Mode.STEALTH_ROOT
-    val direct = config.mode == Mode.WIFI_DIRECT
-    val editable = stealth || direct
-    Panel("HOTSPOT") {
-        if (!editable) {
-            Text(
-                "Android assigns the SSID and password in this mode, and the SSID cannot be hidden. " +
-                    "Switch to Stealth (root/Shizuku) to control both.",
-                style = MaterialTheme.typography.labelMedium, color = Term.amber,
-            )
-        }
-        if (direct) {
-            Text(
-                "Wi-Fi Direct names start with DIRECT-. Some phones ignore a custom name or password; " +
-                    "the real ones are shown after start. The name cannot be hidden.",
-                style = MaterialTheme.typography.labelMedium, color = Term.amber,
-            )
-        }
-        if (stealth) {
-            Text("Privilege source", style = MaterialTheme.typography.labelMedium)
-            Privilege.entries.forEach { p ->
-                FilterChip(
-                    selected = config.privilege == p,
-                    enabled = !locked,
-                    onClick = { onConfig(config.copy(privilege = p)) },
-                    label = { Text(p.label) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = Term.line, selectedLabelColor = Term.green,
-                        labelColor = Term.dim, disabledLabelColor = Term.dim,
-                    ),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-            Text(
-                if (config.privilege == Privilege.SHIZUKU)
-                    "Needs the Shizuku app installed and running. No root required; you grant this app access once."
-                else "Needs a rooted device; you will get a root prompt.",
-                style = MaterialTheme.typography.labelMedium,
-            )
-        }
-        Field("SSID", config.ssid, enabled = editable && !locked) { onConfig(config.copy(ssid = it.take(32))) }
-        Field("Password (8–63)", config.password, enabled = editable && !locked) { onConfig(config.copy(password = it.take(63))) }
-        OutlinedButton(
-            onClick = { onConfig(config.copy(password = ConfigStore.randomSecret(14))) },
-            enabled = editable && !locked,
-        ) { Text("Generate password") }
-        Toggle("Hide SSID (don't broadcast)", config.hiddenSsid && stealth, enabled = stealth && !locked) {
-            onConfig(config.copy(hiddenSsid = it))
-        }
-        if (stealth) {
-            Text(
-                "Hidden SSIDs stop casual discovery only: the name is still sent by your " +
-                    "own devices when they connect. Not a substitute for a strong password.",
-                style = MaterialTheme.typography.labelMedium,
-            )
-        }
-    }
-}
-
-@Composable
-private fun ProxyPanel(config: Config, locked: Boolean, onConfig: (Config) -> Unit, onOpenMesh: (() -> Unit)?) {
-    val stealth = config.mode == Mode.STEALTH_ROOT
-    Panel("PROXY") {
-        if (stealth) {
-            Toggle("Also run proxy", config.proxyEnabled, enabled = !locked) { onConfig(config.copy(proxyEnabled = it)) }
-        }
-        if (config.proxyRuns) {
-            Field("Port", config.port.toString(), enabled = !locked, numeric = true) {
-                onConfig(config.copy(port = it.filter(Char::isDigit).take(5).toIntOrNull() ?: 0))
-            }
-            Toggle("Share VPN with proxy clients", config.requireProxyVpn, enabled = !locked) {
-                onConfig(config.copy(requireProxyVpn = it))
-            }
-            if (config.requireProxyVpn) {
-                Text(
-                    "Connect your VPN before starting. Clients need a proxy login. The session stops if the VPN drops.",
-                    style = MaterialTheme.typography.labelMedium,
-                )
-            }
-            if (onOpenMesh != null) {
-                OutlinedButton(onClick = onOpenMesh) { Text("Open Victorious Mesh") }
-            }
-            val forced = config.proxyAuthForced
-            Toggle(
-                if (forced) "Require login (forced in this mode)" else "Require login",
-                config.authRequired, enabled = !locked && !forced,
-            ) { onConfig(config.copy(requireProxyAuth = it)) }
-            if (config.authRequired) {
-                Field("Username", config.proxyUser, enabled = !locked) { onConfig(config.copy(proxyUser = it)) }
-                Field("Password", config.proxyPass, enabled = !locked) { onConfig(config.copy(proxyPass = it)) }
-            }
-            ProxyDnsControls(config, locked, onConfig)
-        }
-        Field("Auto-stop after (minutes, 0 = never)", config.autoStopMinutes.toString(), enabled = !locked, numeric = true) {
-            onConfig(config.copy(autoStopMinutes = it.filter(Char::isDigit).take(4).toIntOrNull() ?: 0))
-        }
-        val problems = config.validate()
-        problems.forEach { Text("! $it", color = Term.red, style = MaterialTheme.typography.bodyMedium) }
-    }
-}
-
-@Composable
-private fun ProxyDnsControls(config: Config, locked: Boolean, onConfig: (Config) -> Unit) {
-    Text("Proxy DNS", style = MaterialTheme.typography.bodyMedium)
-    ProxyDnsMode.entries.forEach { mode ->
-        FilterChip(
-            selected = config.proxyDnsMode == mode,
-            enabled = !locked,
-            onClick = { onConfig(config.copy(proxyDnsMode = mode)) },
-            label = { Text(mode.label) },
-        )
-    }
-    if (config.proxyDnsMode == ProxyDnsMode.CUSTOM_HTTPS) {
-        Field("HTTPS DNS URL", config.proxyDnsUrl, enabled = !locked) {
-            onConfig(config.copy(proxyDnsUrl = it.take(2048)))
-        }
-    }
-    Text(
-        if (config.proxyDnsMode == ProxyDnsMode.ADGUARD) {
-            "AdGuard receives proxy hostname lookups and blocks supported ad and tracker domains."
-        } else {
-            "Applies to hostnames sent to the HTTP or SOCKS5 proxy."
         },
-        style = MaterialTheme.typography.labelMedium,
-    )
+    ) { insets ->
+        screenState.SaveableStateProvider(screen.name) {
+            Box(Modifier.fillMaxSize().padding(insets), contentAlignment = Alignment.TopCenter) {
+                Column(
+                    Modifier.widthIn(max = 680.dp).fillMaxWidth().verticalScroll(rememberScrollState())
+                        .padding(horizontal = 18.dp, vertical = 18.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    when (screen) {
+                        Screen.CONNECT -> {
+                            ConnectionCard(config, status, upstream, onToggle)
+                            if (status is Status.Running) {
+                                ActiveConnectionDetails(status, stats)
+                            } else {
+                                Panel("Connection mode") {
+                                    Text(config.mode.label, style = MaterialTheme.typography.titleMedium)
+                                    SupportingText(config.mode.blurb)
+                                    TextButton(onClick = { screen = Screen.SETTINGS }) { Text("Change mode") }
+                                }
+                            }
+                            val assessment = Upstream.assess(upstream, config.mode)
+                            val warning = assessment.firstOrNull { it.severity == Severity.BAD }
+                                ?: assessment.firstOrNull { it.severity == Severity.WARN }
+                            if (warning != null) {
+                                Panel("Network status") {
+                                    Text(warning.text, color = if (warning.severity == Severity.BAD) colors.error else ConnectionWarning)
+                                }
+                            }
+                        }
+                        Screen.SETTINGS -> SettingsPanels(config, locked, onConfig, onOpenMesh)
+                        Screen.TOOLS -> {
+                            Panel("Upstream connection") {
+                                if (upstream.validated) InfoLine("Network", upstream.transport.label)
+                                Upstream.assess(upstream, config.mode).filterNot { it.severity == Severity.OK }.forEach { advice ->
+                                    val color = when (advice.severity) {
+                                        Severity.OK -> colors.primary
+                                        Severity.INFO -> colors.onSurfaceVariant
+                                        Severity.WARN -> ConnectionWarning
+                                        Severity.BAD -> colors.error
+                                    }
+                                    Text(advice.text, color = color, style = MaterialTheme.typography.bodyMedium)
+                                }
+                            }
+                            WifiDirectToolsPanel(upstream, hasWifiPermission, onNeedWifiPermission)
+                            if (config.mode == Mode.PROXY_ONLY) {
+                                OutlinedButton(onClick = onOpenSystemHotspot, modifier = Modifier.fillMaxWidth()) {
+                                    Text("Open Android wireless settings")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
-private fun Field(label: String, value: String, enabled: Boolean, numeric: Boolean = false, onChange: (String) -> Unit) {
-    OutlinedTextField(
-        value = value, onValueChange = onChange, label = { Text(label) },
-        enabled = enabled, singleLine = true, modifier = Modifier.fillMaxWidth(),
-        keyboardOptions = KeyboardOptions(keyboardType = if (numeric) KeyboardType.Number else KeyboardType.Text),
-        colors = OutlinedTextFieldDefaults.colors(
-            focusedBorderColor = Term.green, unfocusedBorderColor = Term.line,
-            focusedTextColor = Term.green, unfocusedTextColor = Term.green,
-            disabledTextColor = Term.dim, disabledBorderColor = Term.line,
-            focusedLabelColor = Term.green, unfocusedLabelColor = Term.dim, disabledLabelColor = Term.dim,
-        ),
-    )
-}
+private fun ConnectionCard(config: Config, status: Status, upstream: UpstreamInfo, onToggle: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    val (heading, accent) = when (status) {
+        Status.Idle -> "Tethering is off" to colors.onSurfaceVariant
+        Status.Starting -> "Starting tethering" to ConnectionWarning
+        Status.Stopping -> "Stopping tethering" to ConnectionWarning
+        is Status.Running -> "Tethering is active" to colors.primary
+        is Status.Failed -> "Connection failed" to colors.error
+    }
+    val action = when (status) {
+        Status.Idle, is Status.Failed -> "Start tethering"
+        Status.Starting -> "Cancel start"
+        Status.Stopping -> "Stopping…"
+        is Status.Running -> "Stop tethering"
+    }
+    val stop = status is Status.Running || status == Status.Starting
 
-@Composable
-private fun Toggle(label: String, checked: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth().toggleable(
-            value = checked, enabled = enabled, role = Role.Switch, onValueChange = onChange,
-        ),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        border = BorderStroke(1.dp, colors.outlineVariant),
+        color = colors.surface,
     ) {
-        Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-        Switch(
-            checked = checked, onCheckedChange = null, enabled = enabled,
-            colors = SwitchDefaults.colors(
-                checkedThumbColor = Term.bg, checkedTrackColor = Term.green,
-                uncheckedThumbColor = Term.dim, uncheckedTrackColor = Term.panel,
-            ),
-        )
+        Column(
+            Modifier.background(Brush.verticalGradient(listOf(ConnectionHighlight, colors.surface)))
+                .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Row(
+                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Box(Modifier.size(9.dp).background(accent, CircleShape))
+                Text(heading, style = MaterialTheme.typography.headlineSmall)
+            }
+            if (status is Status.Failed) Text(status.message, color = colors.error)
+            InfoLine("Upstream", upstream.transport.label)
+            if (config.proxyRuns && config.requireProxyVpn) {
+                InfoLine("Proxy route", if (status is Status.Running) "Bound to VPN" else "VPN required")
+            }
+            Button(
+                onClick = onToggle,
+                enabled = status != Status.Stopping,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (stop) colors.errorContainer else colors.primary,
+                    contentColor = if (stop) colors.onErrorContainer else colors.onPrimary,
+                ),
+            ) { Text(action) }
+        }
+    }
+}
+
+@Composable
+private fun ActiveConnectionDetails(status: Status.Running, stats: StatsSnapshot) {
+    val colors = MaterialTheme.colorScheme
+    Panel("Traffic") {
+        InfoLine("Connections", "${stats.activeConnections} active / ${stats.totalConnections} total")
+        InfoLine("Uploaded", Net.humanBytes(stats.bytesUp))
+        InfoLine("Downloaded", Net.humanBytes(stats.bytesDown))
+    }
+    status.hotspot?.let { hotspot ->
+        var showQr by remember(status.startedAtMillis) { mutableStateOf(false) }
+        Panel("Join the network") {
+            InfoLine("Network name", hotspot.ssid + if (hotspot.hidden) " (hidden)" else "")
+            if (hotspot.hidden) SupportingText("Scan the QR code or add the network manually with Hidden network enabled.")
+            OutlinedButton(onClick = { showQr = !showQr }) {
+                Text(if (showQr) "Hide QR and password" else "Show QR and password")
+            }
+            if (showQr) {
+                val qr = remember(hotspot) {
+                    Qr.render(Net.wifiQrPayload(hotspot.ssid, hotspot.password, hotspot.hidden))
+                }
+                Image(
+                    qr.asImageBitmap(), "Wi-Fi connection QR code",
+                    Modifier.size(184.dp).align(Alignment.CenterHorizontally),
+                )
+                InfoLine("Wi-Fi password", hotspot.password)
+            }
+        }
+    }
+    if (status.config.proxyRuns) {
+        var showLogin by remember(status.startedAtMillis) { mutableStateOf(false) }
+        Panel("Proxy address") {
+            SupportingText("Use HTTP or SOCKS5 on your client device.")
+            if (status.addresses.isEmpty()) SupportingText("Port ${status.config.port}. No private IPv4 address found yet.")
+            status.addresses.forEach { candidate ->
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        "${candidate.address}:${status.config.port}",
+                        style = MaterialTheme.typography.bodyLarge.copy(fontFamily = FontFamily.Monospace),
+                        color = colors.primary,
+                    )
+                    SupportingText(candidate.iface + if (candidate.looksLikeAccessPoint) " · likely hotspot" else "")
+                }
+            }
+            if (status.config.authRequired) {
+                TextButton(onClick = { showLogin = !showLogin }) {
+                    Text(if (showLogin) "Hide proxy login" else "Show proxy login")
+                }
+                if (showLogin) {
+                    InfoLine("Username", status.config.proxyUser)
+                    InfoLine("Password", status.config.proxyPass)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun Panel(title: String, content: @Composable ColumnScope.() -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        border = BorderStroke(1.dp, colors.outlineVariant),
+        color = colors.surface,
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            content()
+        }
+    }
+}
+
+@Composable
+internal fun SupportingText(value: String) {
+    Text(value, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+@Composable
+private fun InfoLine(label: String, value: String) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(label, Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(value, Modifier.weight(1.5f))
     }
 }

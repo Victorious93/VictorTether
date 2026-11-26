@@ -56,21 +56,23 @@ Android only gives ordinary apps `startLocalOnlyHotspot`, which accepts no confi
 ## Quick start
 
 1. Install `Victorious-Tether-0.1.0-debug.apk` (from the CI run's artifacts, or build it below).
-2. Open the app, pick a mode, and tap **[ START ]**. Grant the Wi-Fi / Nearby-devices and notification prompts.
-3. **Proxy · no root:** join the hotspot shown, then set your device's HTTP or SOCKS5 proxy to the `PROXY*` address and port.
-4. **Stealth:** pick *Root* or *Shizuku* (Shizuku must be running), set SSID and password, turn on **Hide SSID**, start, and join by scanning the QR code, or add the network manually with *hidden network* enabled.
+2. Pick a connection mode in **Settings**. Open **Connect** and tap **Start tethering**. Grant the requested Wi-Fi, Nearby Devices, and notification permissions.
+3. **Proxy · no root** and **Wi-Fi Direct** clients join the network shown on **Connect**, then use the HTTP or SOCKS5 endpoint under **Proxy address**.
+4. For **Stealth**, select **Root** or **Shizuku**, enter the network name and password, and enable **Hide network name**. Start tethering, then choose **Show QR and password** or add the hidden network manually on the client.
+
+Open **Tools** for upstream checks and Wi-Fi Direct discovery.
 
 ### Custom DNS and ad blocking
 
-Under **Proxy DNS**, choose **System**, **AdGuard ad blocking**, or **Custom DNS over HTTPS**. For a custom resolver, enter the provider’s full HTTPS DNS URL. Start the proxy to apply your selection.
+In **Settings** under **Proxy DNS**, choose **System**, **AdGuard ad blocking**, or **Custom DNS over HTTPS**. For a custom resolver, enter the provider’s full HTTPS DNS URL. Start the proxy to apply your selection.
 
 The selected resolver handles hostnames sent to the HTTP or SOCKS5 proxy. Enable remote hostname resolution in your SOCKS5 client. Clients using native tethering directly use Android’s tethering DNS. AdGuard receives the proxy’s hostname lookups when you select its preset.
 
 ### Share your VPN with connected devices
 
 1. Connect Victorious Mesh or another VPN that includes VictorTether in its app routing. Select an exit node in Mesh if you want to share the exit node’s public internet IP.
-2. In VictorTether, enable **Share VPN with proxy clients** in the **Proxy** panel. Choose **System** DNS when you want to resolve Mesh hostnames through MagicDNS. Check the displayed proxy username and password, then start the session.
-3. Join from the other device and configure its HTTP or SOCKS5 proxy using the local **PROXY** address and port shown in VictorTether. For SOCKS5 hostnames, enable DNS resolution through the proxy.
+2. In **Settings**, enable **Share VPN with proxy clients**. Choose **System** DNS to resolve Mesh hostnames through MagicDNS. Check the proxy login and start the session from **Connect**.
+3. Join from the other device and use the local endpoint under **Proxy address**. Open **Show proxy login** if you need the credentials. For SOCKS5 hostnames, enable DNS resolution through the proxy.
 
 Proxy clients reach Mesh services through the phone’s Mesh identity. Each device needs its own VPN enrollment for a separate Mesh IP. Native Android tethering uses its own routing. VictorTether pins the proxy session to the active VPN and ends the session if that connection is lost or replaced.
 

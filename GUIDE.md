@@ -47,6 +47,8 @@ TetherService (foreground, connectedDevice)│
 
 Key files: `proxy/ProxyServer.kt`, `hotspot/*Backend.kt`, `root/SoftApMain.kt`, `service/TetherService.kt`, `data/Config.kt`.
 
+**Connect** shows the session controls, traffic counters and client connection details. **Settings** holds the connection mode, hotspot, proxy and DNS settings. **Tools** holds network diagnostics and Wi-Fi Direct actions. Passwords are masked in settings, and the Wi-Fi QR and session credentials are revealed explicitly from **Connect**.
+
 ### Proxy DNS
 
 HTTP, CONNECT and SOCKS5 hostname requests use the resolver selected when the proxy starts. System DNS is the default. The AdGuard preset sends DNS requests to AdGuard’s filtering endpoint over HTTPS. Custom mode takes a full DNS-over-HTTPS URL for a user-selected provider. IP addresses supplied by clients go straight to the proxy’s destination checks. Android resolves the HTTPS endpoint’s own hostname during bootstrap.

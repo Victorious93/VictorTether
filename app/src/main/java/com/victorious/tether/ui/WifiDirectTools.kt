@@ -49,7 +49,7 @@ fun WifiDirectToolsPanel(
         }
     }
 
-    Panel("WI-FI DIRECT TOOLS") {
+    Panel("Wi-Fi Direct tools") {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(enabled = !busy, modifier = Modifier.fillMaxWidth(), onClick = {
                 run {
