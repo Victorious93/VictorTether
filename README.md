@@ -27,7 +27,7 @@
 |---|---|
 | **Proxy tether, no root** | Starts Android's LocalOnlyHotspot and serves an HTTP / CONNECT / SOCKS5 proxy on one port. |
 | **Stealth mode (root or Shizuku)** | Brings up a real WPA2 hotspot where *you* choose the SSID and password, and can **hide the SSID**. Uses root, or Shizuku so no root is needed. |
-| **Wi-Fi Direct** | A Wi-Fi Direct group plus the proxy. Usually works while your phone stays on Wi-Fi, so it is the best route for sharing existing Wi-Fi. Name starts with `DIRECT-` and cannot be hidden. Includes tools to check support, scan nearby devices and list group members. |
+| **Wi-Fi Direct** | Share your existing Wi-Fi through a password-protected Wi-Fi Direct group and proxy. Requires a phone that supports both Wi-Fi links at once. Android advertises the `DIRECT-…` group name. |
 | **Proxy only** | Runs just the proxy on a hotspot, Wi-Fi or USB link you already have. Login is forced. |
 | **Upstream check** | Shows whether you are sharing Wi-Fi, mobile data or Ethernet, and warns *before* you start if your phone cannot keep Wi-Fi on while running a hotspot. |
 | **Proxy DNS** | Choose Android’s system resolver, AdGuard DNS ad blocking, or a custom DNS-over-HTTPS endpoint. |
@@ -36,7 +36,7 @@
 | **Quality of life** | Foreground service, Quick Settings tile, live traffic counters, auto-stop timer, generated passwords. |
 | **Clean** | No ads, no billing, no analytics. `allowBackup` off. |
 
-> JVM tests exercise the proxy over loopback sockets and check DNS configuration. CI runs the tests and builds the debug APK. Physical-device verification is pending for hotspot start-up, the root and Shizuku helpers, hidden-SSID behaviour, the tile, and the notification. See [GUIDE.md](GUIDE.md) §1 and §4.
+> JVM tests cover proxy connections, DNS settings and upstream selection. CI runs the tests and builds the debug APK. Physical-device verification is pending for Wi-Fi Direct sharing, hotspot start-up, the root and Shizuku helpers, the tile, and the notification. See [GUIDE.md](GUIDE.md) §1 and §4.
 
 ## Pick a mode
 
@@ -47,7 +47,7 @@
 | **Stealth · root / Shizuku** | root _or_ Shizuku | **hidden** | yes | normal tethering (NAT), proxy optional |
 | **Proxy only** | no | n/a | n/a | you supply the link; proxy login required |
 
-### Why hiding the SSID needs root or Shizuku
+### Hidden SSIDs in Stealth mode
 
 Android only gives ordinary apps `startLocalOnlyHotspot`, which accepts no configuration. Setting a hidden SSID uses `SoftApConfiguration` and `WifiManager#setSoftApConfiguration`, both system-only. Stealth mode therefore runs a small helper with higher privileges that calls them: as root (via `su` and `app_process`), or as the shell user through [Shizuku](https://shizuku.rikka.app/), which needs no root. The Shizuku route is new and unverified on hardware.
 
@@ -62,6 +62,14 @@ Android only gives ordinary apps `startLocalOnlyHotspot`, which accepts no confi
 
 Open **Tools** for upstream checks and Wi-Fi Direct discovery.
 
+### Share your current Wi-Fi through Wi-Fi Direct
+
+1. Keep the host phone connected to Wi-Fi. Select **Wi-Fi Direct · no root** in **Settings**, then tap **Start tethering** in **Connect**.
+2. On the other phone, scan **Show QR and password** or join the indicated `DIRECT-…` network with that password. Use the address shown under **Proxy address** in the client's Wi-Fi HTTP proxy settings or in an HTTP or SOCKS5 client. Only traffic using the proxy is forwarded.
+3. Leave **Auto-stop** at `0` for a session without a timer. If upstream Wi-Fi drops, the proxy pauses and resumes when Wi-Fi returns. If Android removes the Direct group, VictorTether makes up to three attempts to recreate it. Check **Connect** for new credentials if Android assigns a different group.
+
+Android's public Wi-Fi Direct configuration has no hidden-SSID setting. The Shizuku helper controls the separate Stealth hotspot mode.
+
 ### Custom DNS and ad blocking
 
 In **Settings** under **Proxy DNS**, choose **System**, **AdGuard ad blocking**, or **Custom DNS over HTTPS**. For a custom resolver, enter the provider’s full HTTPS DNS URL. Start the proxy to apply your selection.
@@ -74,7 +82,7 @@ The selected resolver handles hostnames sent to the HTTP or SOCKS5 proxy. Enable
 2. In **Settings**, enable **Share VPN with proxy clients**. Choose **System** DNS to resolve Mesh hostnames through MagicDNS. Check the proxy login and start the session from **Connect**.
 3. Join from the other device and use the local endpoint under **Proxy address**. Open **Show proxy login** if you need the credentials. For SOCKS5 hostnames, enable DNS resolution through the proxy.
 
-Proxy clients reach Mesh services through the phone’s Mesh identity. Each device needs its own VPN enrollment for a separate Mesh IP. Native Android tethering uses its own routing. VictorTether pins the proxy session to the active VPN and ends the session if that connection is lost or replaced.
+Proxy clients reach Mesh services through the phone’s Mesh identity. Each device needs its own VPN enrollment for a separate Mesh IP. Native Android tethering uses its own routing. If the active VPN disconnects, the proxy closes open connections and pauses until Android reports an active VPN for VictorTether again.
 
 ## Build from source
 

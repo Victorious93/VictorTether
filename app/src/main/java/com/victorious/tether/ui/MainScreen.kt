@@ -78,7 +78,7 @@ fun MainScreen(
 ) {
     var screen by rememberSaveable { mutableStateOf(Screen.CONNECT) }
     val screenState = rememberSaveableStateHolder()
-    val locked = status is Status.Running || status == Status.Starting || status == Status.Stopping
+    val locked = status is Status.Running || status is Status.Reconnecting || status == Status.Starting || status == Status.Stopping
     val colors = MaterialTheme.colorScheme
 
     Scaffold(
@@ -159,7 +159,7 @@ fun MainScreen(
                                     Text(advice.text, color = color, style = MaterialTheme.typography.bodyMedium)
                                 }
                             }
-                            WifiDirectToolsPanel(upstream, hasWifiPermission, onNeedWifiPermission)
+                            WifiDirectToolsPanel(upstream, hasWifiPermission, onNeedWifiPermission, locked)
                             if (config.mode == Mode.PROXY_ONLY) {
                                 OutlinedButton(onClick = onOpenSystemHotspot, modifier = Modifier.fillMaxWidth()) {
                                     Text("Open Android wireless settings")
@@ -179,6 +179,7 @@ private fun ConnectionCard(config: Config, status: Status, upstream: UpstreamInf
     val (heading, accent) = when (status) {
         Status.Idle -> "Tethering is off" to colors.onSurfaceVariant
         Status.Starting -> "Starting tethering" to ConnectionWarning
+        is Status.Reconnecting -> "Reconnecting" to ConnectionWarning
         Status.Stopping -> "Stopping tethering" to ConnectionWarning
         is Status.Running -> "Tethering is active" to colors.primary
         is Status.Failed -> "Connection failed" to colors.error
@@ -187,9 +188,9 @@ private fun ConnectionCard(config: Config, status: Status, upstream: UpstreamInf
         Status.Idle, is Status.Failed -> "Start tethering"
         Status.Starting -> "Cancel start"
         Status.Stopping -> "Stopping…"
-        is Status.Running -> "Stop tethering"
+        is Status.Running, is Status.Reconnecting -> "Stop tethering"
     }
-    val stop = status is Status.Running || status == Status.Starting
+    val stop = status is Status.Running || status is Status.Reconnecting || status == Status.Starting
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -211,6 +212,7 @@ private fun ConnectionCard(config: Config, status: Status, upstream: UpstreamInf
                 Text(heading, style = MaterialTheme.typography.headlineSmall)
             }
             if (status is Status.Failed) Text(status.message, color = colors.error)
+            if (status is Status.Reconnecting) SupportingText(status.message)
             InfoLine("Upstream", upstream.transport.label)
             if (config.proxyRuns && config.requireProxyVpn) {
                 InfoLine("Proxy route", if (status is Status.Running) "Bound to VPN" else "VPN required")
@@ -242,6 +244,7 @@ private fun ActiveConnectionDetails(status: Status.Running, stats: StatsSnapshot
         Panel("Join the network") {
             InfoLine("Network name", hotspot.ssid + if (hotspot.hidden) " (hidden)" else "")
             if (hotspot.hidden) SupportingText("Scan the QR code or add the network manually with Hidden network enabled.")
+            if (status.config.mode == Mode.WIFI_DIRECT) SupportingText("Scan the QR code or select this network in the other phone’s Wi-Fi settings.")
             OutlinedButton(onClick = { showQr = !showQr }) {
                 Text(if (showQr) "Hide QR and password" else "Show QR and password")
             }

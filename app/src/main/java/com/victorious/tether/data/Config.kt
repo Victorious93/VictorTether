@@ -14,7 +14,7 @@ enum class Mode(val label: String, val blurb: String) {
     ),
     WIFI_DIRECT(
         "Wi-Fi Direct · no root",
-        "Wi-Fi Direct group + built-in proxy. Usually works while the phone stays on Wi-Fi. Name starts with DIRECT- and cannot be hidden."
+        "Share an existing Wi-Fi connection with a password-protected Wi-Fi Direct group and the built-in proxy."
     ),
     STEALTH_ROOT(
         "Stealth · root/Shizuku",

@@ -30,7 +30,7 @@ class TetherTile : TileService() {
 
     override fun onClick() {
         when (TetherState.status.value) {
-            is Status.Running, Status.Starting -> TetherService.stop(this)
+            is Status.Running, is Status.Reconnecting, Status.Starting -> TetherService.stop(this)
             Status.Stopping -> Unit
             else -> runCatching { TetherService.start(this) }.onFailure { openApp() }
         }
@@ -39,7 +39,7 @@ class TetherTile : TileService() {
     private fun render(s: Status) {
         val tile = qsTile ?: return
         tile.state = when (s) {
-            is Status.Running -> Tile.STATE_ACTIVE
+            is Status.Running, is Status.Reconnecting -> Tile.STATE_ACTIVE
             Status.Starting -> Tile.STATE_ACTIVE
             Status.Stopping -> Tile.STATE_UNAVAILABLE
             else -> Tile.STATE_INACTIVE
@@ -48,6 +48,7 @@ class TetherTile : TileService() {
         tile.subtitle = when (s) {
             is Status.Running -> "On"
             Status.Starting -> "Starting…"
+            is Status.Reconnecting -> "Reconnecting…"
             Status.Stopping -> "Stopping…"
             is Status.Failed -> "Failed"
             Status.Idle -> "Off"

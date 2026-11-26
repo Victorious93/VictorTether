@@ -41,7 +41,7 @@ object Upstream {
         }
 
         if (info.transport == Transport.WIFI && mode == Mode.WIFI_DIRECT) {
-            add(Advice(Severity.INFO, "Wi-Fi Direct normally keeps your Wi-Fi connected, which makes it the best option for sharing Wi-Fi. Phones that cannot do both will fail to create the group; the app will say so."))
+            add(Advice(Severity.INFO, "Wi-Fi Direct sharing uses this Wi-Fi connection when your phone supports both links at once."))
         }
         if (info.transport == Transport.WIFI && (mode == Mode.PROXY_LOCAL || mode == Mode.STEALTH_ROOT)) {
             when (info.staApConcurrent) {
@@ -95,19 +95,20 @@ class UpstreamMonitor(context: Context) {
 
     private fun read(): UpstreamInfo {
         val caps = cm.activeNetwork?.let { cm.getNetworkCapabilities(it) }
-        val transport = when {
-            caps == null -> Transport.NONE
-            caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> Transport.VPN
-            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> Transport.WIFI
-            caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> Transport.CELLULAR
-            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> Transport.ETHERNET
-            else -> Transport.OTHER
-        }
         val concurrent = runCatching { wifi.isStaApConcurrencySupported }.getOrNull()
         return UpstreamInfo(
-            transport = transport,
+            transport = caps.toUpstreamTransport(),
             validated = caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true,
             staApConcurrent = concurrent,
         )
     }
+}
+
+internal fun NetworkCapabilities?.toUpstreamTransport(): Transport = when {
+    this == null -> Transport.NONE
+    hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> Transport.VPN
+    hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> Transport.WIFI
+    hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> Transport.CELLULAR
+    hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> Transport.ETHERNET
+    else -> Transport.OTHER
 }

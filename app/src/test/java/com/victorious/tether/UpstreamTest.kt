@@ -59,7 +59,7 @@ class WifiDirectModeTest {
         val info = UpstreamInfo(Transport.WIFI, true, staApConcurrent = false)
         val a = Upstream.assess(info, Mode.WIFI_DIRECT)
         assertFalse(Upstream.blocking(a))
-        assertTrue(a.any { "Wi-Fi Direct normally keeps your Wi-Fi" in it.text })
+        assertTrue(a.any { "Wi-Fi Direct sharing uses this Wi-Fi connection" in it.text })
     }
 
     @Test fun networkNameGetsDirectPrefixAndFits32Bytes() {

@@ -10,12 +10,12 @@ _Last synchronised with v0.1.0, including Shizuku, Wi-Fi Direct, upstream checks
 | Finished | Proxy DNS selection with system DNS, AdGuard ad blocking and custom DNS over HTTPS |
 | Finished | Optional VPN-bound proxy sessions with forced login, plus prompt closure of both sides of active tunnels on Stop |
 | Finished | Config validation, Wi-Fi QR payload, foreground service, Quick Settings tile, Compose UI |
-| Finished | Debug APK builds, `lintDebug` clean |
+| Finished | Debug APK builds, `lintDebug` passes |
 | In Progress | Nothing |
 | Finished (unverified on device) | Shizuku backend: Stealth without root |
 | Finished (logic tested, UI unverified) | Upstream check shows what you are sharing and warns when starting the hotspot may interrupt the connection |
-| Finished (unverified on device) | Wi-Fi Direct mode and tools panel with JVM coverage for naming, validation and upstream advice |
-| Deferred | Per-client list for proxy modes, upstream-network pinning, release signing |
+| Finished (unverified on device) | Wi-Fi Direct mode with Wi-Fi-bound proxy connections and group recovery, and a tools panel |
+| Deferred | Per-client list for proxy modes, manual upstream selection, release signing |
 | Abandoned | Copying/decompiling the reference app (see §6) |
 
 An Android emulator verified **Proxy only** start, stop and restart. Physical-device verification is pending for LocalOnlyHotspot, Wi-Fi Direct, the root and Shizuku helpers, hidden-SSID behaviour, the tile, and VPN sharing with a live Mesh network.
@@ -25,7 +25,7 @@ An Android emulator verified **Proxy only** start, stop and restart. Physical-de
 | Mode | Root | SSID visible | You choose SSID/password | Internet path for clients |
 |---|---|---|---|---|
 | Proxy · no root | no | **yes** (platform limit) | no (Android picks) | client must set HTTP/SOCKS proxy to `ip:port` |
-| Wi-Fi Direct · no root | no | visible, starts with `DIRECT-`, **cannot be hidden** | partly (many phones ignore it) | client must set proxy to `ip:port` |
+| Wi-Fi Direct · no root | no | Android advertises the `DIRECT-…` name | requested, device dependent | client must set proxy to `ip:port` |
 | Stealth · root **or Shizuku** | root _or_ Shizuku | **hidden** | yes | native tethering (NAT) — proxy optional |
 | Proxy only | no | n/a | n/a | you bring the link (system hotspot, USB…); login forced |
 
@@ -57,7 +57,7 @@ When the chosen HTTPS resolver fails, the proxy reports a connection error. Choo
 
 ### VPN sharing
 
-**Share VPN with proxy clients** requires Android to report a VPN as VictorTether’s active network. The service uses that network’s socket factory for outbound proxy connections and for HTTPS DNS requests. System lookups and HTTPS resolver bootstrap also use that network. If Android switches the active network or the VPN disconnects, the service stops the session and closes both sides of each active tunnel.
+**Share VPN with proxy clients** requires Android to report a VPN as VictorTether’s active network. The service uses that network’s socket factory for outbound proxy connections and for HTTPS DNS requests. System lookups and HTTPS resolver bootstrap also use that network. When the active VPN is lost or changes, the proxy closes both sides of active tunnels. It resumes on an active VPN, subject to the original auto-stop timer.
 
 **Open Victorious Mesh** launches the installed Mesh app. Connect and manage your Headscale profile in Mesh. The proxy uses the VPN routes that Android exposes to VictorTether. A Mesh exit node provides internet egress through that node. The proxy login gives connected clients the phone’s access to reachable services, so share it with the devices you intend to give that access.
 
@@ -96,13 +96,13 @@ Not covered: the app cannot tell which Wi-Fi network (SSID) is the source withou
 
 ## 4d. Wi-Fi Direct
 
-`hotspot/WifiDirect.kt` wraps `WifiP2pManager` in coroutines. `WifiDirectBackend` creates a group (custom `DIRECT-vt-<ssid>` name and passphrase, 2.4 GHz, non-persistent), falls back to a system-chosen group if the phone rejects the custom one, then reads back the **real** name and passphrase and shows those. Like LocalOnlyHotspot, a P2P group has no internet routing, so the proxy runs on top of it.
+`hotspot/WifiDirect.kt` wraps `WifiP2pManager` in coroutines. `WifiDirectBackend` requests a non-persistent group with a `DIRECT-vt-<ssid>` name and passphrase, letting Android select the operating band. It falls back to a system-chosen group if the phone rejects the custom configuration. **Connect** shows the actual name, password and group owner IPv4 address. The proxy listens at that address and forwards traffic from clients that use it.
 
-Why it exists: `LocalOnlyHotspot` and tethering often cannot run while the phone is on Wi-Fi; Wi-Fi Direct usually can _[Likely]_, so it is the better route for sharing an existing Wi-Fi connection. The cost is that the name always starts with `DIRECT-` and cannot be hidden by any public API _[Likely]_.
+Simultaneous Wi-Fi and Wi-Fi Direct depends on the phone. The public Wi-Fi Direct group configuration has no hidden-SSID setting. The hidden-SSID setting in Stealth applies to Android's native hotspot.
 
-Tools panel: **Check support** (hardware feature, P2P switched on, hotspot+Wi-Fi concurrency, current source), **Scan nearby** (5 s peer discovery), **Show group & members** (group name, owner/member, member list), **Remove group**. Android hides real hardware addresses from apps, so addresses may be placeholders.
+If the session starts with Wi-Fi as its upstream, outbound proxy connections and DNS stay bound to Wi-Fi. The proxy pauses when Android stops reporting Wi-Fi as the active route and resumes when it returns. When Android drops the Direct group, the foreground service tries to recreate it up to three times. Stop and the original auto-stop deadline still apply. Clients may need to reconnect to the recreated group, especially if Android assigns a new name or password.
 
-Not done: the app is not told if the group is removed by the system or the user while running (no P2P broadcast receiver yet), so the session can keep showing ONLINE after the group is gone. Use **Show group & members** to check.
+**Tools** can check Wi-Fi Direct support, scan for peers, show the group and members, or remove a group while the app has no sharing session. Android can report placeholder hardware addresses to apps.
 
 ## 5. Security decisions
 
@@ -129,8 +129,7 @@ CI (`.github/workflows/build.yml`) does the same and uploads the APK. Bump `vers
 
 1. Device-test every path in §1's "not verified" list; fix what breaks.
 2. Confirm on a device that the shell user can run SoftApControl (see §4b); add a fallback message if not.
-3. Pin upstream traffic to a chosen network (cellular vs Wi-Fi) via `ConnectivityManager.bindProcessToNetwork`.
+3. Add manual upstream selection for proxy sessions.
 4. Connected-client list and per-connection log.
-5. Listen for `WIFI_P2P_CONNECTION_CHANGED_ACTION` so the session stops when the group disappears.
-6. SOCKS5 UDP ASSOCIATE (currently refused with reply 0x07).
-7. Release signing + reproducible build notes.
+5. SOCKS5 UDP ASSOCIATE (currently refused with reply 0x07).
+6. Release signing + reproducible build notes.

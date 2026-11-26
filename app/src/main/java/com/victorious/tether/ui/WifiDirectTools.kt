@@ -31,6 +31,7 @@ fun WifiDirectToolsPanel(
     upstream: UpstreamInfo,
     hasPermission: Boolean,
     onNeedPermission: () -> Unit,
+    sessionActive: Boolean = false,
 ) {
     val context = LocalContext.current
     val direct = remember { WifiDirect(context) }
@@ -80,7 +81,7 @@ fun WifiDirectToolsPanel(
                 }
             }) { Text("Show group & members") }
 
-            OutlinedButton(enabled = !busy, modifier = Modifier.fillMaxWidth(), onClick = {
+            OutlinedButton(enabled = !busy && !sessionActive, modifier = Modifier.fillMaxWidth(), onClick = {
                 run { direct.removeGroup(); report = listOf("Group removal requested."); peers = null }
             }) { Text("Remove group") }
         }

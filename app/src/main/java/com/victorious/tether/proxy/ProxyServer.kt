@@ -38,6 +38,7 @@ class ProxyServer(
     private val blockLocalDestinations: Boolean = true,
     private val dns: Dns = Dns.SYSTEM,
     private val openUpstreamSocket: () -> Socket = ::Socket,
+    private val listenAddress: InetAddress? = null,
 ) {
     private var server: ServerSocket? = null
     // Each accepted connection owns at most one upstream socket.
@@ -53,7 +54,7 @@ class ProxyServer(
         val ss = ServerSocket()
         try {
             ss.reuseAddress = true
-            ss.bind(InetSocketAddress(port))
+            ss.bind(InetSocketAddress(listenAddress, port))
         } catch (e: IOException) {
             runCatching { ss.close() }
             throw e

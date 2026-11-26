@@ -2,10 +2,16 @@ package com.victorious.tether.data
 
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import java.net.InetAddress
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
-data class HotspotInfo(val ssid: String, val password: String, val hidden: Boolean)
+data class HotspotInfo(
+    val ssid: String,
+    val password: String,
+    val hidden: Boolean,
+    val proxyAddress: InetAddress? = null,
+)
 
 data class IpCandidate(val iface: String, val address: String, val looksLikeAccessPoint: Boolean)
 
@@ -14,6 +20,7 @@ data class StatsSnapshot(val activeConnections: Int = 0, val totalConnections: L
 sealed interface Status {
     data object Idle : Status
     data object Starting : Status
+    data class Reconnecting(val message: String) : Status
     data object Stopping : Status
     data class Running(
         val config: Config,

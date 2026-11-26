@@ -26,6 +26,22 @@ class ProxyServerTest {
 
     private fun freePort() = ServerSocket(0).use { it.localPort }
 
+    @Test fun proxyListenerCanBeLimitedToTheGroupAddress() {
+        val address = InetAddress.getByName("127.0.0.1")
+        val otherAddress = InetAddress.getByName("127.0.0.2")
+        val port = freePort()
+        val server = ProxyServer(port, null, stats, listenAddress = address)
+        server.start()
+        try {
+            ServerSocket().use { other ->
+                other.bind(InetSocketAddress(otherAddress, port))
+                assertTrue(other.isBound)
+            }
+        } finally {
+            server.stop()
+        }
+    }
+
     private fun startProxy(
         creds: ProxyCredentials? = null,
         blockLocal: Boolean = false,

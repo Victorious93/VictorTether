@@ -10,7 +10,6 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.net.Network
-import android.net.NetworkCapabilities
 import android.os.IBinder
 import android.os.PowerManager
 import android.os.SystemClock
@@ -20,6 +19,8 @@ import com.victorious.tether.MainActivity
 import com.victorious.tether.R
 import com.victorious.tether.data.Config
 import com.victorious.tether.data.ConfigStore
+import com.victorious.tether.data.HotspotInfo
+import com.victorious.tether.data.IpCandidate
 import com.victorious.tether.data.Mode
 import com.victorious.tether.data.Privilege
 import com.victorious.tether.data.Stats
@@ -27,6 +28,7 @@ import com.victorious.tether.data.StatsSnapshot
 import com.victorious.tether.data.Status
 import com.victorious.tether.data.TetherState
 import com.victorious.tether.hotspot.HotspotBackend
+import com.victorious.tether.hotspot.HotspotException
 import com.victorious.tether.hotspot.LocalOnlyBackend
 import com.victorious.tether.hotspot.RootBackend
 import com.victorious.tether.hotspot.ShizukuBackend
@@ -35,6 +37,7 @@ import com.victorious.tether.proxy.HttpsProxyDns
 import com.victorious.tether.proxy.ProxyCredentials
 import com.victorious.tether.proxy.ProxyServer
 import com.victorious.tether.util.Net
+import com.victorious.tether.util.toUpstreamTransport
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -97,41 +100,16 @@ class TetherService : Service() {
 
     private suspend fun runSession(config: Config) {
         val stats = Stats()
-        var backend: HotspotBackend? = null
-        var proxy: ProxyServer? = null
-        var proxyDns: HttpsProxyDns? = null
         var wakeLock: PowerManager.WakeLock? = null
         var failure: String? = null
         try {
-            val vpn = if (config.proxyRuns && config.requireProxyVpn) {
-                checkNotNull(activeVpn()) { "Connect a VPN that includes VictorTether, then start again." }
-            } else null
+            val initial = connectivity.activeNetwork
+            val transport = initial?.let(connectivity::getNetworkCapabilities).toUpstreamTransport()
+            val upstream = ProxyUpstream.forSession(config, transport)
+            check(upstream.accepts(transport)) { "Connect a VPN that includes VictorTether, then start again." }
             wakeLock = (getSystemService(POWER_SERVICE) as PowerManager)
                 .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "VictoriousTether:session").apply { acquire() }
-            backend = hotspotBackend(config, currentCoroutineContext().job)
-            val hotspot = backend?.start(config)
-
-            if (config.proxyRuns) {
-                checkVpn(vpn)
-                val sockets = vpn?.socketFactory ?: SocketFactory.getDefault()
-                val systemDns = if (vpn == null) Dns.SYSTEM else object : Dns {
-                    override fun lookup(hostname: String): List<InetAddress> = vpn.getAllByName(hostname).asList()
-                }
-                proxyDns = config.proxyDnsEndpoint()?.let { HttpsProxyDns(it, sockets, systemDns) }
-                val credentials = if (config.authRequired) ProxyCredentials(config.proxyUser, config.proxyPass) else null
-                val server = ProxyServer(
-                    config.port, credentials, stats,
-                    dns = proxyDns ?: systemDns,
-                    openUpstreamSocket = sockets::createSocket,
-                )
-                proxy = server
-                withContext(Dispatchers.IO) { server.start() }
-            }
-
-            val addresses = withContext(Dispatchers.IO) { Net.candidateAddresses() }
-            checkVpn(vpn)
-            TetherState.set(Status.Running(config, hotspot, addresses, System.currentTimeMillis()))
-            publishTraffic(config, vpn, stats)
+            shareUntilStopped(config, upstream, stats)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -139,11 +117,6 @@ class TetherService : Service() {
         } finally {
             if (!destroyed) TetherState.set(Status.Stopping)
             withContext(NonCancellable) {
-                withContext(Dispatchers.IO) {
-                    proxy?.stop()
-                    proxyDns?.close()
-                }
-                runCatching { withTimeout(10_000) { backend?.stop() } }
                 wakeLock?.takeIf { it.isHeld }?.release()
                 if (!destroyed) {
                     session = null
@@ -156,31 +129,138 @@ class TetherService : Service() {
         }
     }
 
-    private suspend fun publishTraffic(config: Config, vpn: Network?, stats: Stats) {
-        val deadline = if (config.autoStopMinutes > 0) {
-            SystemClock.elapsedRealtime() + config.autoStopMinutes * 60_000L
-        } else Long.MAX_VALUE
-        while (true) {
-            val timeLeft = deadline - SystemClock.elapsedRealtime()
-            if (timeLeft <= 0) return
-            checkVpn(vpn)
-            val counters = stats.snapshot()
-            TetherState.publish(counters)
-            val route = if (vpn != null) "VPN · " else ""
-            updateNotification("$route↑ ${Net.humanBytes(counters.bytesUp)}  ↓ ${Net.humanBytes(counters.bytesDown)} · ${counters.activeConnections} conn")
-            delay(minOf(1000L, timeLeft))
+    private suspend fun shareUntilStopped(config: Config, upstream: ProxyUpstream, stats: Stats) {
+        val job = currentCoroutineContext().job
+        var deadline = Long.MAX_VALUE
+        for (attempt in 0..MAX_DIRECT_RESTARTS) {
+            if (attempt > 0) {
+                if (upstream == ProxyUpstream.WIFI) {
+                    while (boundUpstream(upstream) == null && timeLeft(deadline) > 0) {
+                        showReconnecting("Waiting for Wi-Fi to return before reconnecting the Wi-Fi Direct group.")
+                        delay(minOf(1_000L, timeLeft(deadline)))
+                    }
+                }
+                showReconnecting("Reconnecting the Wi-Fi Direct group ($attempt of $MAX_DIRECT_RESTARTS)")
+                delay(minOf(1_000L shl (attempt - 1), timeLeft(deadline)))
+                if (timeLeft(deadline) == 0L) return
+            }
+            val backend = hotspotBackend(config, job)
+            try {
+                val hotspot = backend?.start(config)
+                if (attempt == 0 && config.autoStopMinutes > 0) {
+                    deadline = SystemClock.elapsedRealtime() + config.autoStopMinutes * 60_000L
+                }
+                val groupLost = serveConnection(config, hotspot, backend as? WifiDirectBackend, upstream, stats, deadline)
+                if (!groupLost) return
+            } catch (e: HotspotException) {
+                if (attempt == 0 || attempt == MAX_DIRECT_RESTARTS) throw e
+            } finally {
+                withContext(NonCancellable) { runCatching { withTimeout(10_000) { backend?.stop() } } }
+            }
+        }
+        throw HotspotException("Wi-Fi Direct keeps disconnecting. Android could not keep the group active.")
+    }
+
+    /** Returns true when Android has dropped a Wi-Fi Direct group that we own. */
+    private suspend fun serveConnection(
+        config: Config,
+        hotspot: HotspotInfo?,
+        direct: WifiDirectBackend?,
+        upstream: ProxyUpstream,
+        stats: Stats,
+        deadline: Long,
+    ): Boolean {
+        var proxy: ActiveProxy? = null
+        var boundNetwork: Network? = null
+        var reportedRunning = false
+        var missingGroupReports = 0
+        var nextGroupCheck = SystemClock.elapsedRealtime() + GROUP_CHECK_INTERVAL
+        val groupAddress = hotspot?.proxyAddress
+
+        try {
+            while (timeLeft(deadline) > 0) {
+                if (direct != null && hotspot != null && SystemClock.elapsedRealtime() >= nextGroupCheck) {
+                    when (direct.groupIsActive(hotspot.ssid)) {
+                        false -> missingGroupReports++
+                        true -> missingGroupReports = 0
+                        null -> Unit  // A missing callback is not confirmation of a lost group.
+                    }
+                    if (missingGroupReports >= 2) {
+                        showReconnecting("Android disconnected the Wi-Fi Direct group.")
+                        return true
+                    }
+                    nextGroupCheck = SystemClock.elapsedRealtime() + GROUP_CHECK_INTERVAL
+                }
+
+                val network = boundUpstream(upstream)
+                if (upstream != ProxyUpstream.SYSTEM && network == null) {
+                    withContext(Dispatchers.IO) { proxy?.close() }
+                    proxy = null
+                    boundNetwork = null
+                    reportedRunning = false
+                    showReconnecting("Waiting for ${upstream.transport?.label}. Client traffic is paused.")
+                } else {
+                    if (!reportedRunning || network != boundNetwork) {
+                        withContext(Dispatchers.IO) { proxy?.close() }
+                        proxy = if (config.proxyRuns) createProxy(config, stats, network, groupAddress) else null
+                        withContext(Dispatchers.IO) { proxy?.server?.start() }
+                        val addresses = if (groupAddress != null) {
+                            listOf(IpCandidate("Wi-Fi Direct", groupAddress.hostAddress.orEmpty(), false))
+                        } else withContext(Dispatchers.IO) {
+                            Net.candidateAddresses()
+                        }
+                        TetherState.set(Status.Running(config, hotspot, addresses, System.currentTimeMillis()))
+                        boundNetwork = network
+                        reportedRunning = true
+                    }
+                    val counters = stats.snapshot()
+                    TetherState.publish(counters)
+                    val route = upstream.transport?.let { "${it.label} · " }.orEmpty()
+                    updateNotification("$route↑ ${Net.humanBytes(counters.bytesUp)}  ↓ ${Net.humanBytes(counters.bytesDown)} · ${counters.activeConnections} conn")
+                }
+                delay(minOf(1_000L, timeLeft(deadline)))
+            }
+            return false
+        } finally {
+            withContext(NonCancellable + Dispatchers.IO) { proxy?.close() }
         }
     }
 
-    private fun activeVpn(): Network? {
-        val network = connectivity.activeNetwork ?: return null
-        val capabilities = connectivity.getNetworkCapabilities(network) ?: return null
-        return network.takeIf { capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN) }
+    private fun createProxy(config: Config, stats: Stats, network: Network?, listenAddress: InetAddress?): ActiveProxy {
+        val sockets = network?.socketFactory ?: SocketFactory.getDefault()
+        val systemDns = if (network == null) Dns.SYSTEM else object : Dns {
+            override fun lookup(hostname: String): List<InetAddress> = network.getAllByName(hostname).asList()
+        }
+        val dns = config.proxyDnsEndpoint()?.let { HttpsProxyDns(it, sockets, systemDns) }
+        val credentials = if (config.authRequired) ProxyCredentials(config.proxyUser, config.proxyPass) else null
+        return ActiveProxy(ProxyServer(
+            config.port, credentials, stats, dns = dns ?: systemDns,
+            openUpstreamSocket = sockets::createSocket, listenAddress = listenAddress,
+        ), dns)
     }
 
-    private fun checkVpn(vpn: Network?) {
-        check(vpn == null || activeVpn() == vpn) { "VPN disconnected or changed. Reconnect it, then start VictorTether again." }
+    private class ActiveProxy(val server: ProxyServer, private val dns: HttpsProxyDns?) {
+        fun close() {
+            try { server.stop() } finally { dns?.close() }
+        }
     }
+
+    private fun boundUpstream(upstream: ProxyUpstream): Network? {
+        if (upstream == ProxyUpstream.SYSTEM) return null
+        val network = connectivity.activeNetwork ?: return null
+        val transport = connectivity.getNetworkCapabilities(network).toUpstreamTransport()
+        return network.takeIf { upstream.accepts(transport) }
+    }
+
+    private fun showReconnecting(message: String) {
+        val next = Status.Reconnecting(message)
+        if (TetherState.status.value != next) {
+            TetherState.set(next)
+            updateNotification(message)
+        }
+    }
+
+    private fun timeLeft(deadline: Long) = (deadline - SystemClock.elapsedRealtime()).coerceAtLeast(0L)
 
     private fun requestStop() {
         val current = session
@@ -244,6 +324,8 @@ class TetherService : Service() {
         const val ACTION_STOP = "com.victorious.tether.STOP"
         private const val CHANNEL = "session"
         private const val NOTIFICATION_ID = 42
+        private const val GROUP_CHECK_INTERVAL = 3_000L
+        private const val MAX_DIRECT_RESTARTS = 3
 
         fun start(context: Context) =
             ContextCompat.startForegroundService(context, Intent(context, TetherService::class.java))

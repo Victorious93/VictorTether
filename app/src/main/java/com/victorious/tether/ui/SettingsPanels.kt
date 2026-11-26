@@ -70,10 +70,10 @@ internal fun SettingsPanels(config: Config, locked: Boolean, onConfig: (Config) 
 
 @Composable
 private fun HotspotSettings(config: Config, locked: Boolean, onConfig: (Config) -> Unit) {
-    Panel("Hotspot") {
+    Panel(if (config.mode == Mode.WIFI_DIRECT) "Wi-Fi Direct group" else "Hotspot") {
         when (config.mode) {
             Mode.PROXY_LOCAL -> SupportingText("Android shows the network name and Wi-Fi password after the hotspot starts.")
-            Mode.WIFI_DIRECT -> SupportingText("Wi-Fi Direct names start with DIRECT-. Check Connect for the name and password chosen by your phone.")
+            Mode.WIFI_DIRECT -> SupportingText("Android advertises the DIRECT- group name. Your client needs the password shown on Connect.")
             Mode.STEALTH_ROOT -> {
                 Text("Hotspot access", style = MaterialTheme.typography.labelLarge)
                 Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -121,7 +121,7 @@ private fun ProxySettings(config: Config, locked: Boolean, onConfig: (Config) ->
             SettingSwitch("Share VPN with proxy clients", config.requireProxyVpn, !locked) {
                 onConfig(config.copy(requireProxyVpn = it))
             }
-            if (config.requireProxyVpn) SupportingText("Connect your VPN before starting. Sharing stops if the VPN disconnects.")
+            if (config.requireProxyVpn) SupportingText("Connect your VPN before starting. Client traffic pauses until the VPN reconnects.")
             if (onOpenMesh != null) OutlinedButton(onClick = onOpenMesh) { Text("Open Victorious Mesh") }
             SettingSwitch(
                 if (config.proxyAuthForced) "Client login required" else "Require client login",

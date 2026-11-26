@@ -52,16 +52,17 @@ class MainActivity : ComponentActivity() {
         val upstream by monitor.state.collectAsState()
         val meshIntent = remember { packageManager.getLaunchIntentForPackage(MESH_PACKAGE) }
 
+        var hasWifi by remember { mutableStateOf(granted(wifiPermission())) }
         val permissionLauncher = rememberLauncherForActivityResult(
             ActivityResultContracts.RequestMultiplePermissions()
         ) { result ->
             val needed = requiredPermissions(config)
+            hasWifi = granted(wifiPermission())
             // Notification permission is optional for function; Wi-Fi permission is not.
             val wifiOk = needed.filter { it != Manifest.permission.POST_NOTIFICATIONS }.all { result[it] == true || granted(it) }
             if (wifiOk) startChecked(config)
         }
 
-        var hasWifi by remember { mutableStateOf(granted(wifiPermission())) }
         val toolsPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { hasWifi = it }
 
         MainScreen(

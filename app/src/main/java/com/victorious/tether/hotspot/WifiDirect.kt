@@ -9,8 +9,12 @@ import android.net.wifi.p2p.WifiP2pManager
 import android.os.Looper
 import com.victorious.tether.data.Config
 import com.victorious.tether.data.HotspotInfo
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import java.net.Inet4Address
 import kotlin.coroutines.resume
 
 /** What the user sees about a Wi-Fi Direct group. */
@@ -64,14 +68,12 @@ class WifiDirect(private val context: Context) {
     suspend fun createGroup(name: String?, passphrase: String?) {
         val m = manager ?: throw HotspotException("Wi-Fi Direct is not supported on this phone")
         val ch = channel()
-        removeGroupQuietly()
         val cfg = runCatching {
             if (name != null && passphrase != null) {
                 WifiP2pConfig.Builder()
                     .setNetworkName(name)
                     .setPassphrase(passphrase)
                     .enablePersistentMode(false)
-                    .setGroupOperatingBand(WifiP2pConfig.GROUP_OWNER_BAND_2GHZ)
                     .build()
             } else null
         }.getOrNull()
@@ -98,10 +100,21 @@ class WifiDirect(private val context: Context) {
         )
     }
 
+    suspend fun groupOwnerAddress(): Inet4Address? {
+        val m = manager ?: return null
+        return suspendCancellableCoroutine { cont ->
+            m.requestConnectionInfo(channel()) { info ->
+                val address = info.groupOwnerAddress as? Inet4Address
+                val owner = info.groupFormed && info.isGroupOwner && address?.isAnyLocalAddress == false
+                if (cont.isActive) cont.resume(address.takeIf { owner })
+            }
+        }
+    }
+
     /** Waits for the system to report the group after [createGroup]; null if it never appears. */
     suspend fun awaitGroup(): DirectGroup? {
         repeat(20) {
-            groupInfo()?.takeIf { it.networkName.isNotEmpty() }?.let { return it }
+            groupInfo()?.takeIf { it.isOwner && it.networkName.isNotEmpty() }?.let { return it }
             delay(500)
         }
         return null
@@ -111,8 +124,6 @@ class WifiDirect(private val context: Context) {
         val m = manager ?: return
         action { m.removeGroup(channel(), it) }
     }
-
-    private suspend fun removeGroupQuietly() { runCatching { removeGroup() }; delay(300) }
 
     suspend fun discoverPeers(seconds: Int = 5): List<DirectPeer> {
         val m = manager ?: throw HotspotException("Wi-Fi Direct is not supported on this phone")
@@ -166,18 +177,54 @@ class WifiDirect(private val context: Context) {
     }
 }
 
-/** Wi-Fi Direct group as a hotspot. Clients still need the proxy, as with LocalOnlyHotspot. */
+/** Owns a Wi-Fi Direct group for proxy clients. */
 class WifiDirectBackend(context: Context) : HotspotBackend {
     private val direct = WifiDirect(context)
+    private var ownsGroup = false
+    private var groupName: String? = null
 
     override suspend fun start(config: Config): HotspotInfo {
-        direct.createGroup(WifiDirect.networkNameFor(config.ssid), config.password)
-        val g = direct.awaitGroup() ?: throw HotspotException("Wi-Fi Direct group did not come up")
-        return HotspotInfo(g.networkName, g.passphrase, hidden = false)
+        val available = withTimeoutOrNull(3_000) { direct.groupInfo() == null }
+            ?: throw HotspotException("Android did not report the Wi-Fi Direct group state.")
+        if (!available) throw HotspotException("A Wi-Fi Direct group is already active. Close it before starting VictorTether.")
+        withContext(NonCancellable) {
+            val accepted = withTimeoutOrNull(6_000) {
+                direct.createGroup(WifiDirect.networkNameFor(config.ssid), config.password)
+                true
+            } ?: false
+            if (!accepted) throw HotspotException("Android did not respond to the Wi-Fi Direct group request.")
+            ownsGroup = true
+        }
+        val group = withTimeoutOrNull(12_000) { direct.awaitGroup() }
+            ?: throw HotspotException("Android could not bring up the Wi-Fi Direct group.")
+        groupName = group.networkName
+        if (group.passphrase.isBlank()) throw HotspotException("Android did not provide the Wi-Fi Direct group password.")
+        val address = withTimeoutOrNull(4_000) {
+            var ownerAddress = direct.groupOwnerAddress()
+            while (ownerAddress == null) {
+                delay(250)
+                ownerAddress = direct.groupOwnerAddress()
+            }
+            ownerAddress
+        } ?: throw HotspotException("The Wi-Fi Direct group has no usable IPv4 address.")
+        return HotspotInfo(group.networkName, group.passphrase, hidden = false, proxyAddress = address)
+    }
+
+    suspend fun groupIsActive(name: String): Boolean? = withTimeoutOrNull(1_500) {
+        val group = direct.groupInfo()
+        group?.isOwner == true && group.networkName == name
     }
 
     override suspend fun stop() {
-        runCatching { direct.removeGroup() }
-        direct.close()
+        try {
+            if (ownsGroup) withTimeoutOrNull(4_000) {
+                val name = groupName
+                if (name == null || groupIsActive(name) == true) direct.removeGroup()
+            }
+        } finally {
+            ownsGroup = false
+            groupName = null
+            direct.close()
+        }
     }
 }
