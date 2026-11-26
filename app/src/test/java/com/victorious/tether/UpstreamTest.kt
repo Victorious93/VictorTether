@@ -72,4 +72,12 @@ class WifiDirectModeTest {
         val c = com.victorious.tether.data.Config(mode = Mode.WIFI_DIRECT, ssid = "n", password = "short")
         assertTrue(c.validate().any { "password" in it })
     }
+
+    @Test fun groupLossIsOnlySuspectedWhileRunningAndNotFormed() {
+        val check = com.victorious.tether.hotspot.WifiDirectBackend.Companion::shouldCheckForLoss
+        assertTrue(check(true, false))
+        assertFalse(check(true, true))   // group still up
+        assertFalse(check(true, null))   // broadcast without info
+        assertFalse(check(false, false)) // setup or our own teardown
+    }
 }

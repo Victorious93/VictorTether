@@ -99,7 +99,7 @@ class TetherService : Service() {
         val b: HotspotBackend = when (config.mode) {
             Mode.PROXY_LOCAL -> LocalOnlyBackend(this) { shutdown() }
             Mode.STEALTH_ROOT -> if (config.privilege == Privilege.SHIZUKU) ShizukuBackend(this) else RootBackend(this)
-            Mode.WIFI_DIRECT -> WifiDirectBackend(this)
+            Mode.WIFI_DIRECT -> WifiDirectBackend(this) { shutdown() }
             Mode.PROXY_ONLY -> return null
         }
         backend = b

@@ -1,15 +1,24 @@
 package com.victorious.tether.hotspot
 
 import android.annotation.SuppressLint
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pDevice
 import android.net.wifi.p2p.WifiP2pGroup
 import android.net.wifi.p2p.WifiP2pManager
 import android.os.Looper
+import androidx.core.content.ContextCompat
 import com.victorious.tether.data.Config
 import com.victorious.tether.data.HotspotInfo
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 
@@ -166,18 +175,73 @@ class WifiDirect(private val context: Context) {
     }
 }
 
-/** Wi-Fi Direct group as a hotspot. Clients still need the proxy, as with LocalOnlyHotspot. */
-class WifiDirectBackend(context: Context) : HotspotBackend {
+/**
+ * Wi-Fi Direct group as a hotspot. Clients still need the proxy, as with LocalOnlyHotspot.
+ *
+ * Watches the system's connection-changed broadcast so that if the group disappears (user
+ * removed it, Wi-Fi switched off, another app took the radio) [onExternalStop] ends the session
+ * instead of leaving the UI saying ONLINE.
+ */
+class WifiDirectBackend(
+    private val context: Context,
+    private val onExternalStop: () -> Unit,
+) : HotspotBackend {
     private val direct = WifiDirect(context)
+    // Main dispatcher on purpose: P2P callbacks arrive on the main looper, so never block it.
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    /** Only true between a successful start and our own stop, so setup/teardown events are ignored. */
+    @Volatile private var active = false
+    private var receiver: BroadcastReceiver? = null
 
     override suspend fun start(config: Config): HotspotInfo {
         direct.createGroup(WifiDirect.networkNameFor(config.ssid), config.password)
         val g = direct.awaitGroup() ?: throw HotspotException("Wi-Fi Direct group did not come up")
+        watchForGroupLoss()
+        active = true
         return HotspotInfo(g.networkName, g.passphrase, hidden = false)
     }
 
     override suspend fun stop() {
+        active = false
+        unwatch()
         runCatching { direct.removeGroup() }
         direct.close()
+    }
+
+    private fun watchForGroupLoss() {
+        val r = object : BroadcastReceiver() {
+            override fun onReceive(c: Context, intent: Intent) {
+                val formed = intent.getParcelableExtra<android.net.wifi.p2p.WifiP2pInfo>(WifiP2pManager.EXTRA_WIFI_P2P_INFO)?.groupFormed
+                if (!shouldCheckForLoss(active, formed)) return
+                // The broadcast can flicker; confirm with the system before ending the session.
+                scope.launch {
+                    delay(CONFIRM_DELAY_MS)
+                    if (active && runCatching { direct.groupInfo() }.getOrNull() == null) {
+                        active = false
+                        onExternalStop()
+                    }
+                }
+            }
+        }
+        receiver = r
+        ContextCompat.registerReceiver(
+            context.applicationContext, r,
+            IntentFilter(WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+    }
+
+    private fun unwatch() {
+        scope.coroutineContext[kotlinx.coroutines.Job]?.cancelChildren()
+        receiver?.let { runCatching { context.applicationContext.unregisterReceiver(it) } }
+        receiver = null
+    }
+
+    companion object {
+        private const val CONFIRM_DELAY_MS = 1500L
+
+        /** A loss is only suspected while running and when the system says the group is not formed. */
+        fun shouldCheckForLoss(active: Boolean, groupFormed: Boolean?): Boolean = active && groupFormed == false
     }
 }
