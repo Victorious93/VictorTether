@@ -1,11 +1,16 @@
 package com.victorious.tether
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.view.HapticFeedbackConstants
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -35,11 +40,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val store = ConfigStore(this)
-        setContent {
-            VictoriousTheme {
-                Root(store)
-            }
-        }
+        setContent { Root(store) }
     }
 
     @Composable
@@ -47,10 +48,16 @@ class MainActivity : ComponentActivity() {
         var config by remember { mutableStateOf(store.load()) }
         val status by TetherState.status.collectAsState()
         val stats by TetherState.stats.collectAsState()
+        val clients by TetherState.clients.collectAsState()
         val monitor = remember { UpstreamMonitor(this) }
         DisposableEffect(monitor) { monitor.start(); onDispose { monitor.stop() } }
         val upstream by monitor.state.collectAsState()
         val meshIntent = remember { packageManager.getLaunchIntentForPackage(MESH_PACKAGE) }
+        val keepScreenOn = config.keepScreenOn && (status is Status.Running || status is Status.Reconnecting || status == Status.Starting)
+        DisposableEffect(keepScreenOn) {
+            if (keepScreenOn) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            onDispose { if (keepScreenOn) window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
+        }
 
         var hasWifi by remember { mutableStateOf(granted(wifiPermission())) }
         val permissionLauncher = rememberLauncherForActivityResult(
@@ -65,33 +72,51 @@ class MainActivity : ComponentActivity() {
 
         val toolsPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { hasWifi = it }
 
-        MainScreen(
-            hasWifiPermission = hasWifi,
-            onNeedWifiPermission = { toolsPermission.launch(wifiPermission()) },
-            config = config,
-            status = status,
-            stats = stats,
-            upstream = upstream,
-            onConfig = { config = it; store.save(it) },
-            onToggle = {
-                if (status is Status.Idle || status is Status.Failed) {
-                    val missing = requiredPermissions(config).filterNot { granted(it) }
-                    if (missing.isEmpty()) startChecked(config) else permissionLauncher.launch(missing.toTypedArray())
-                } else if (status != Status.Stopping) {
-                    TetherService.stop(this)
-                }
-            },
-            onOpenMesh = meshIntent?.let { intent ->
-                {
-                    runCatching { startActivity(intent) }.onFailure {
-                        Toast.makeText(this, "Could not open Victorious Mesh", Toast.LENGTH_SHORT).show()
+        VictoriousTheme(config.themeMode, config.dynamicColors) {
+            MainScreen(
+                hasWifiPermission = hasWifi,
+                onNeedWifiPermission = { toolsPermission.launch(wifiPermission()) },
+                config = config,
+                status = status,
+                stats = stats,
+                clients = clients,
+                upstream = upstream,
+                onConfig = { config = it; store.save(it) },
+                onToggle = {
+                    if (config.haptics) window.decorView.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                    if (status is Status.Idle || status is Status.Failed) {
+                        val missing = requiredPermissions(config).filterNot { granted(it) }
+                        if (missing.isEmpty()) startChecked(config) else permissionLauncher.launch(missing.toTypedArray())
+                    } else if (status != Status.Stopping) {
+                        TetherService.stop(this)
                     }
-                }
-            },
-            onOpenSystemHotspot = {
-                runCatching { startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS)) }
-            },
-        )
+                },
+                onOpenMesh = meshIntent?.let { intent ->
+                    {
+                        runCatching { startActivity(intent) }.onFailure {
+                            Toast.makeText(this, "Could not open Victorious Mesh", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                },
+                onOpenSystemHotspot = {
+                    runCatching { startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS)) }
+                },
+                onOpenBatterySettings = {
+                    runCatching { startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
+                        .onFailure { Toast.makeText(this, "Open VictorTether’s battery settings in Android Settings", Toast.LENGTH_SHORT).show() }
+                },
+                onOpenReleases = {
+                    val uri = Uri.parse("https://github.com/Victorious93/VictorTether/releases")
+                    runCatching { startActivity(Intent(Intent.ACTION_VIEW, uri)) }
+                        .onFailure { Toast.makeText(this, "No browser available", Toast.LENGTH_SHORT).show() }
+                },
+                onClientPolicy = TetherState::updateClient,
+                onCopyText = { text ->
+                    getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("VictorTether", text))
+                    if (Build.VERSION.SDK_INT < 33) Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show()
+                },
+            )
+        }
     }
 
     /** Starts the service, first making sure Shizuku is usable when that is the chosen privilege source. */

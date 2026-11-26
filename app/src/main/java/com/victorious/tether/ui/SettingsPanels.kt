@@ -1,7 +1,9 @@
 package com.victorious.tether.ui
 
+import android.os.Build
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -13,6 +15,9 @@ import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
@@ -37,12 +42,23 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.victorious.tether.data.Config
 import com.victorious.tether.data.ConfigStore
+import com.victorious.tether.data.DirectBand
 import com.victorious.tether.data.Mode
 import com.victorious.tether.data.Privilege
 import com.victorious.tether.data.ProxyDnsMode
+import com.victorious.tether.data.ProxyIdleTimeout
+import com.victorious.tether.data.ThemeMode
+import com.victorious.tether.data.UpstreamPreference
 
 @Composable
-internal fun SettingsPanels(config: Config, locked: Boolean, onConfig: (Config) -> Unit, onOpenMesh: (() -> Unit)?) {
+internal fun SettingsPanels(
+    config: Config,
+    locked: Boolean,
+    onConfig: (Config) -> Unit,
+    onOpenMesh: (() -> Unit)?,
+    onOpenBatterySettings: () -> Unit,
+    onOpenSystemHotspot: () -> Unit,
+) {
     if (locked) SupportingText("Stop tethering to change settings.")
     Panel("Connection mode") {
         Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -52,19 +68,57 @@ internal fun SettingsPanels(config: Config, locked: Boolean, onConfig: (Config) 
         }
         SupportingText(config.mode.blurb)
     }
-    if (config.mode != Mode.PROXY_ONLY) HotspotSettings(config, locked, onConfig)
+    when (config.mode) {
+        Mode.PROXY_ONLY -> Unit
+        Mode.USB_PROXY -> Panel("USB connection") {
+            SupportingText("Connect a USB data cable and enable USB tethering in Android settings. VictorTether will wait for the USB link.")
+            OutlinedButton(onClick = onOpenSystemHotspot) { Text("Open Android network settings") }
+        }
+        else -> HotspotSettings(config, locked, onConfig)
+    }
     ProxySettings(config, locked, onConfig, onOpenMesh)
     Panel("Session") {
         Field("Auto-stop (minutes)", config.autoStopMinutes.toString(), !locked, KeyboardType.Number) {
             onConfig(config.copy(autoStopMinutes = it.filter(Char::isDigit).take(4).toIntOrNull() ?: 0))
         }
         SupportingText("Set to 0 to keep sharing until you stop the session.")
+        SettingSwitch("Keep CPU awake while sharing", config.holdCpuAwake, !locked) { onConfig(config.copy(holdCpuAwake = it)) }
+        SettingSwitch("Keep screen on in VictorTether", config.keepScreenOn, !locked) { onConfig(config.copy(keepScreenOn = it)) }
+        if (config.mode != Mode.STEALTH_ROOT) {
+            SettingSwitch("Restore session after Android restarts the service", config.resumeAfterKill, !locked) {
+                onConfig(config.copy(resumeAfterKill = it))
+            }
+        }
+        OutlinedButton(onClick = onOpenBatterySettings) { Text("Android battery settings") }
     }
     val problems = config.validate()
     if (problems.isNotEmpty()) {
         Panel("Check your settings") {
             problems.forEach { Text(it, color = MaterialTheme.colorScheme.error) }
         }
+    }
+    Panel("Appearance") {
+        Selection("Theme", config.themeMode, ThemeMode.entries, !locked, ThemeMode::label) { onConfig(config.copy(themeMode = it)) }
+        if (Build.VERSION.SDK_INT >= 31) {
+            SettingSwitch("Use Android dynamic colors", config.dynamicColors, !locked) { onConfig(config.copy(dynamicColors = it)) }
+        }
+        SettingSwitch("Vibrate on start and stop", config.haptics, !locked) { onConfig(config.copy(haptics = it)) }
+    }
+    var showReset by remember { mutableStateOf(false) }
+    TextButton(onClick = { showReset = true }, enabled = !locked) { Text("Restore default settings") }
+    if (showReset && !locked) {
+        AlertDialog(
+            onDismissRequest = { showReset = false },
+            title = { Text("Restore default settings?") },
+            text = { Text("Your connection settings will reset, and VictorTether will generate new Wi-Fi and proxy passwords.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    onConfig(Config(password = ConfigStore.randomSecret(12), proxyPass = ConfigStore.randomSecret(10)))
+                    showReset = false
+                }) { Text("Restore defaults") }
+            },
+            dismissButton = { TextButton(onClick = { showReset = false }) { Text("Cancel") } },
+        )
     }
 }
 
@@ -88,7 +142,7 @@ private fun HotspotSettings(config: Config, locked: Boolean, onConfig: (Config) 
                     else "Grant access when your root manager prompts you."
                 )
             }
-            Mode.PROXY_ONLY -> Unit
+            Mode.PROXY_ONLY, Mode.USB_PROXY -> Unit
         }
         if (config.mode == Mode.WIFI_DIRECT || config.mode == Mode.STEALTH_ROOT) {
             Field("Network name (SSID)", config.ssid, !locked) { onConfig(config.copy(ssid = it.take(32))) }
@@ -102,6 +156,11 @@ private fun HotspotSettings(config: Config, locked: Boolean, onConfig: (Config) 
         }
         if (config.mode == Mode.STEALTH_ROOT) {
             SettingSwitch("Hide network name", config.hiddenSsid, !locked) { onConfig(config.copy(hiddenSsid = it)) }
+        }
+        if (config.mode == Mode.WIFI_DIRECT) {
+            Selection("Wi-Fi Direct band", config.directBand, DirectBand.entries.filter { Build.VERSION.SDK_INT >= it.minimumSdk }, !locked, DirectBand::label) {
+                onConfig(config.copy(directBand = it))
+            }
         }
     }
 }
@@ -122,6 +181,19 @@ private fun ProxySettings(config: Config, locked: Boolean, onConfig: (Config) ->
                 onConfig(config.copy(requireProxyVpn = it))
             }
             if (config.requireProxyVpn) SupportingText("Connect your VPN before starting. Client traffic pauses until the VPN reconnects.")
+            if (!config.requireProxyVpn) {
+                Selection("Upstream network", config.upstreamPreference, UpstreamPreference.entries, !locked, UpstreamPreference::label) {
+                    onConfig(config.copy(upstreamPreference = it))
+                }
+                when (config.upstreamPreference) {
+                    UpstreamPreference.AUTOMATIC -> SupportingText("Wi-Fi Direct stays on Wi-Fi when the session starts there. Other sessions use Android’s active network.")
+                    UpstreamPreference.ACTIVE -> SupportingText("Follow Android’s active network when it changes.")
+                    else -> SupportingText("Client traffic waits when this network is unavailable. Enable VPN sharing to send client traffic through a VPN.")
+                }
+            }
+            Selection("Proxy idle timeout", config.proxyIdleTimeout, ProxyIdleTimeout.entries, !locked, ProxyIdleTimeout::label) {
+                onConfig(config.copy(proxyIdleTimeout = it))
+            }
             if (onOpenMesh != null) OutlinedButton(onClick = onOpenMesh) { Text("Open Victorious Mesh") }
             SettingSwitch(
                 if (config.proxyAuthForced) "Client login required" else "Require client login",
@@ -172,7 +244,7 @@ private fun Choice(label: String, selected: Boolean, enabled: Boolean, onClick: 
 }
 
 @Composable
-private fun SettingSwitch(label: String, checked: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit) {
+internal fun SettingSwitch(label: String, checked: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit) {
     Row(
         Modifier.fillMaxWidth().toggleable(value = checked, enabled = enabled, role = Role.Switch, onValueChange = onChange)
             .heightIn(min = 48.dp),
@@ -185,7 +257,7 @@ private fun SettingSwitch(label: String, checked: Boolean, enabled: Boolean, onC
 }
 
 @Composable
-private fun Field(label: String, value: String, enabled: Boolean, keyboard: KeyboardType = KeyboardType.Text, onChange: (String) -> Unit) {
+internal fun Field(label: String, value: String, enabled: Boolean, keyboard: KeyboardType = KeyboardType.Text, onChange: (String) -> Unit) {
     val password = keyboard == KeyboardType.Password
     var revealed by remember { mutableStateOf(false) }
     OutlinedTextField(
@@ -208,4 +280,21 @@ private fun Field(label: String, value: String, enabled: Boolean, keyboard: Keyb
             }
         } else null,
     )
+}
+
+@Composable
+private fun <T> Selection(title: String, selected: T, choices: List<T>, enabled: Boolean, label: (T) -> String, onSelect: (T) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Text(title, style = MaterialTheme.typography.labelLarge)
+    Box {
+        OutlinedButton(
+            onClick = { expanded = true }, enabled = enabled,
+            modifier = Modifier.semantics { contentDescription = "$title, ${label(selected)}" },
+        ) { Text(label(selected)) }
+        DropdownMenu(expanded = expanded && enabled, onDismissRequest = { expanded = false }) {
+            choices.forEach { choice ->
+                DropdownMenuItem(text = { Text(label(choice)) }, onClick = { expanded = false; onSelect(choice) })
+            }
+        }
+    }
 }

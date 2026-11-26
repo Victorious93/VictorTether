@@ -1,19 +1,25 @@
 package com.victorious.tether
 
 import com.victorious.tether.data.Stats
+import com.victorious.tether.proxy.ClientPolicy
 import com.victorious.tether.proxy.ProxyCredentials
 import com.victorious.tether.proxy.ProxyServer
 import okhttp3.Dns
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.DataInputStream
+import java.net.DatagramPacket
+import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketException
+import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.util.Base64
 
@@ -47,11 +53,13 @@ class ProxyServerTest {
         blockLocal: Boolean = false,
         dns: Dns = Dns.SYSTEM,
         openUpstreamSocket: () -> Socket = ::Socket,
+        openUpstreamDatagram: () -> DatagramSocket = { DatagramSocket() },
     ): Int {
         val port = freePort()
         ProxyServer(
             port, creds, stats, blockLocalDestinations = blockLocal, dns = dns,
             openUpstreamSocket = openUpstreamSocket,
+            openUpstreamDatagram = openUpstreamDatagram,
         ).also {
             it.start()
             closers += { it.stop() }
@@ -167,6 +175,112 @@ class ProxyServerTest {
             val back = ByteArray(10).also { din.readFully(it) }
             assertEquals("ECHO-socks", String(back))
         }
+    }
+
+    @Test fun socks4aUsesProxyDnsAndCannotBypassLogin() {
+        val origin = startOrigin()
+        fun request(proxy: Int, expected: Int) {
+            Socket("127.0.0.1", proxy).use { s ->
+                s.soTimeout = 3000
+                val input = DataInputStream(s.getInputStream())
+                val output = s.getOutputStream()
+                output.write(byteArrayOf(4, 1, (origin shr 8).toByte(), origin.toByte(), 0, 0, 0, 1, 0) + "origin.invalid\u0000".toByteArray())
+                val response = ByteArray(8).also(input::readFully)
+                assertEquals(expected, response[1].toInt())
+                if (expected == 90) {
+                    val data = "ECHO-4a".toByteArray()
+                    output.write(data)
+                    assertArrayEquals(data, ByteArray(data.size).also(input::readFully))
+                }
+            }
+        }
+        request(startProxy(dns = testOriginDns()), 90)
+        request(startProxy(creds = ProxyCredentials("victor", "secret"), dns = testOriginDns()), 91)
+    }
+
+    @Test fun socks5UdpRelaysBothWaysAndPinsTheClientPort() {
+        val loopback = InetAddress.getByName("127.0.0.1")
+        val proxy = startProxy(dns = testOriginDns())
+        DatagramSocket(0, loopback).use { origin ->
+            origin.soTimeout = 3000
+            DatagramSocket(0, loopback).use { client ->
+                client.soTimeout = 3000
+                Socket("127.0.0.1", proxy).use { control ->
+                    val relay = associate(control, client.localPort)
+                    val host = "origin.invalid".toByteArray()
+                    val target = byteArrayOf(3, host.size.toByte()) + host + byteArrayOf((origin.localPort shr 8).toByte(), origin.localPort.toByte())
+                    val request = byteArrayOf(0, 0, 0) + target + "udp round trip".toByteArray()
+                    val frame = DatagramPacket(request, request.size, relay)
+                    DatagramSocket(0, loopback).use { wrongPort -> wrongPort.send(frame) }
+                    val packet = DatagramPacket(ByteArray(512), 512)
+                    origin.soTimeout = 200
+                    assertThrows(SocketTimeoutException::class.java) { origin.receive(packet) }
+                    client.send(frame)
+                    origin.soTimeout = 3000
+                    origin.receive(packet)
+                    assertEquals("udp round trip", String(packet.data, 0, packet.length))
+                    origin.send(DatagramPacket(packet.data, packet.length, packet.socketAddress))
+                    val response = DatagramPacket(ByteArray(512), 512)
+                    client.receive(response)
+                    assertArrayEquals(byteArrayOf(0, 0, 0, 1, 127, 0, 0, 1, (origin.localPort shr 8).toByte(), origin.localPort.toByte()) +
+                        "udp round trip".toByteArray(), response.data.copyOf(response.length))
+                }
+            }
+        }
+    }
+
+    @Test fun udpBindingFailureReturnsAnErrorWithoutFallingBack() {
+        val port = startProxy(openUpstreamDatagram = { throw SocketException("Disconnected") })
+        Socket("127.0.0.1", port).use { control ->
+            val reply = requestAssociation(control, 0)
+            assertEquals(1, reply[1].toInt())
+            assertEquals(-1, control.getInputStream().read())
+        }
+    }
+
+    @Test fun blockingAClientClosesOpenTunnelsAndRejectsNewOnes() {
+        val request = "CONNECT 127.0.0.1:%d HTTP/1.1\r\nHost: x\r\n\r\n"
+        val port = startProxy()
+        ServerSocket(0).use { origin ->
+            origin.soTimeout = 3000
+            Socket("127.0.0.1", port).use { client ->
+                client.soTimeout = 3000
+                client.getOutputStream().write(request.format(origin.localPort).toByteArray())
+                val input = DataInputStream(client.getInputStream())
+                val header = StringBuilder()
+                while (!header.endsWith("\r\n\r\n")) header.append(input.readUnsignedByte().toChar())
+                assertTrue(header.toString().startsWith("HTTP/1.1 200"))
+                origin.accept().use { peer ->
+                    peer.soTimeout = 3000
+                    val clientId = stats.clients.snapshots().single().address
+                    stats.clients.update(clientId, ClientPolicy(nickname = "Client phone", allowed = false))
+                    assertEquals(-1, input.read())
+                    assertEquals(-1, peer.getInputStream().read())
+                    assertEquals("Client phone", stats.clients.snapshots().single().policy.nickname)
+                    assertTrue(rawHttp(port, request.format(origin.localPort)).startsWith("HTTP/1.1 403"))
+                }
+            }
+        }
+    }
+
+    private fun requestAssociation(control: Socket, clientPort: Int): ByteArray {
+        control.soTimeout = 3000
+        val input = DataInputStream(control.getInputStream())
+        val output = control.getOutputStream()
+        output.write(byteArrayOf(5, 1, 0))
+        assertEquals(5, input.readUnsignedByte())
+        assertEquals(0, input.readUnsignedByte())
+        output.write(byteArrayOf(5, 3, 0, 1, 0, 0, 0, 0, (clientPort shr 8).toByte(), clientPort.toByte()))
+        return ByteArray(10).also(input::readFully)
+    }
+
+    private fun associate(control: Socket, clientPort: Int): InetSocketAddress {
+        val reply = requestAssociation(control, clientPort)
+        assertEquals(0, reply[1].toInt())
+        assertEquals(1, reply[3].toInt())
+        val address = InetAddress.getByAddress(reply.copyOfRange(4, 8))
+        val port = ((reply[8].toInt() and 255) shl 8) or (reply[9].toInt() and 255)
+        return InetSocketAddress(address, port)
     }
 
     @Test fun socks5RejectsBadPasswordAndAcceptsGood() {

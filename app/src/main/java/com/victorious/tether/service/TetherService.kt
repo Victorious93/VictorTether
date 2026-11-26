@@ -33,6 +33,7 @@ import com.victorious.tether.hotspot.LocalOnlyBackend
 import com.victorious.tether.hotspot.RootBackend
 import com.victorious.tether.hotspot.ShizukuBackend
 import com.victorious.tether.hotspot.WifiDirectBackend
+import com.victorious.tether.hotspot.directGroupKey
 import com.victorious.tether.proxy.HttpsProxyDns
 import com.victorious.tether.proxy.ProxyCredentials
 import com.victorious.tether.proxy.ProxyServer
@@ -48,11 +49,13 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import okhttp3.Dns
+import java.net.DatagramSocket
 import java.net.InetAddress
 import javax.net.SocketFactory
 
@@ -60,7 +63,9 @@ import javax.net.SocketFactory
 class TetherService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val connectivity by lazy { getSystemService(ConnectivityManager::class.java) }
+    private val recovery by lazy { SessionRecovery(this) }
     private var session: Job? = null
+    private var restartable = false
     private var destroyed = false
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -68,48 +73,71 @@ class TetherService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> requestStop()
-            else -> if (session == null) begin()
+            else -> if (session == null) begin(fromSystemRestart = intent == null)
         }
-        return START_NOT_STICKY
+        return if (restartable) START_STICKY else START_NOT_STICKY
     }
 
-    private fun begin() {
+    private fun begin(fromSystemRestart: Boolean) {
         val config = ConfigStore(this).load()
+        val checkpoint = if (fromSystemRestart && config.canResumeSession) recovery.read(config) else null
+        if (checkpoint == null) recovery.clear()
+        if (fromSystemRestart && checkpoint == null) {
+            stopSelf()
+            return
+        }
         val problems = config.validate()
         if (problems.isNotEmpty()) {
             TetherState.set(Status.Failed(problems.joinToString("; ")))
             stopSelf()
             return
         }
+        restartable = config.canResumeSession
         TetherState.set(Status.Starting)
-        startForegroundCompat(buildNotification("Starting…"))
-        val job = scope.launch(start = CoroutineStart.LAZY) { runSession(config) }
+        startForegroundCompat(buildNotification(if (checkpoint == null) "Starting…" else "Restoring connection…"))
+        val job = scope.launch(start = CoroutineStart.LAZY) { runSession(config, checkpoint) }
         session = job
         job.start()
     }
 
-    private fun hotspotBackend(config: Config, job: Job): HotspotBackend? =
+    private fun hotspotBackend(config: Config, job: Job, previousGroupKey: String?): HotspotBackend? =
         when (config.mode) {
             Mode.PROXY_LOCAL -> LocalOnlyBackend(this) {
                 if (session === job) requestStop()
             }
             Mode.STEALTH_ROOT -> if (config.privilege == Privilege.SHIZUKU) ShizukuBackend(this) else RootBackend(this)
-            Mode.WIFI_DIRECT -> WifiDirectBackend(this)
-            Mode.PROXY_ONLY -> null
+            Mode.WIFI_DIRECT -> WifiDirectBackend(this, previousGroupKey)
+            Mode.PROXY_ONLY, Mode.USB_PROXY -> null
         }
 
-    private suspend fun runSession(config: Config) {
+    private suspend fun runSession(config: Config, checkpoint: SessionCheckpoint?) {
         val stats = Stats()
         var wakeLock: PowerManager.WakeLock? = null
+        var route: UpstreamRoute? = null
         var failure: String? = null
         try {
             val initial = connectivity.activeNetwork
             val transport = initial?.let(connectivity::getNetworkCapabilities).toUpstreamTransport()
-            val upstream = ProxyUpstream.forSession(config, transport)
-            check(upstream.accepts(transport)) { "Connect a VPN that includes VictorTether, then start again." }
-            wakeLock = (getSystemService(POWER_SERVICE) as PowerManager)
-                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "VictoriousTether:session").apply { acquire() }
-            shareUntilStopped(config, upstream, stats)
+            if (checkpoint != null && timeLeft(checkpoint.deadline) == 0L) {
+                checkpoint.directGroupKey?.let { WifiDirectBackend(this, it).stop() }
+                return
+            }
+            val upstream = checkpoint?.upstream ?: ProxyUpstream.forSession(config, transport)
+            check(checkpoint != null || upstream != ProxyUpstream.VPN || upstream.accepts(transport)) { "Connect a VPN that includes VictorTether, then start again." }
+            if (checkpoint != null) stats.clients.restore(recovery.readClients())
+            route = UpstreamRoute(connectivity, upstream, config.upstreamPreference)
+            if (config.holdCpuAwake) {
+                wakeLock = getSystemService(PowerManager::class.java)
+                    .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "VictoriousTether:session").apply { acquire() }
+            }
+            val owner = currentCoroutineContext().job
+            TetherState.setClientEditor { address, policy ->
+                scope.launch {
+                    withContext(Dispatchers.IO) { stats.clients.update(address, policy) }
+                    if (session === owner && owner.isActive) publishClients(stats)
+                }
+            }
+            shareUntilStopped(config, route, stats, checkpoint)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -117,9 +145,14 @@ class TetherService : Service() {
         } finally {
             if (!destroyed) TetherState.set(Status.Stopping)
             withContext(NonCancellable) {
+                runCatching { route?.close() }
                 wakeLock?.takeIf { it.isHeld }?.release()
                 if (!destroyed) {
                     session = null
+                    restartable = false
+                    recovery.clear()
+                    TetherState.setClientEditor(null)
+                    TetherState.publishClients(emptyList())
                     TetherState.publish(StatsSnapshot())
                     TetherState.set(failure?.let { Status.Failed(it) } ?: Status.Idle)
                     stopForeground(STOP_FOREGROUND_REMOVE)
@@ -129,13 +162,13 @@ class TetherService : Service() {
         }
     }
 
-    private suspend fun shareUntilStopped(config: Config, upstream: ProxyUpstream, stats: Stats) {
+    private suspend fun shareUntilStopped(config: Config, upstream: UpstreamRoute, stats: Stats, checkpoint: SessionCheckpoint?) {
         val job = currentCoroutineContext().job
-        var deadline = Long.MAX_VALUE
+        var deadline = checkpoint?.deadline ?: Long.MAX_VALUE
         for (attempt in 0..MAX_DIRECT_RESTARTS) {
             if (attempt > 0) {
-                if (upstream == ProxyUpstream.WIFI) {
-                    while (boundUpstream(upstream) == null && timeLeft(deadline) > 0) {
+                if (upstream.kind == ProxyUpstream.WIFI) {
+                    while (upstream.active() == null && timeLeft(deadline) > 0) {
                         showReconnecting("Waiting for Wi-Fi to return before reconnecting the Wi-Fi Direct group.")
                         delay(minOf(1_000L, timeLeft(deadline)))
                     }
@@ -144,11 +177,16 @@ class TetherService : Service() {
                 delay(minOf(1_000L shl (attempt - 1), timeLeft(deadline)))
                 if (timeLeft(deadline) == 0L) return
             }
-            val backend = hotspotBackend(config, job)
+            val backend = hotspotBackend(config, job, checkpoint?.directGroupKey.takeIf { attempt == 0 })
             try {
                 val hotspot = backend?.start(config)
-                if (attempt == 0 && config.autoStopMinutes > 0) {
+                if (attempt == 0 && checkpoint == null && config.autoStopMinutes > 0) {
                     deadline = SystemClock.elapsedRealtime() + config.autoStopMinutes * 60_000L
+                }
+                currentCoroutineContext().ensureActive()
+                if (restartable) {
+                    val groupKey = if (config.mode == Mode.WIFI_DIRECT && hotspot != null) directGroupKey(hotspot.ssid, hotspot.password) else null
+                    recovery.save(config, SessionCheckpoint(upstream.kind, deadline, groupKey))
                 }
                 val groupLost = serveConnection(config, hotspot, backend as? WifiDirectBackend, upstream, stats, deadline)
                 if (!groupLost) return
@@ -166,12 +204,13 @@ class TetherService : Service() {
         config: Config,
         hotspot: HotspotInfo?,
         direct: WifiDirectBackend?,
-        upstream: ProxyUpstream,
+        upstream: UpstreamRoute,
         stats: Stats,
         deadline: Long,
     ): Boolean {
         var proxy: ActiveProxy? = null
         var boundNetwork: Network? = null
+        var boundAddress: InetAddress? = null
         var reportedRunning = false
         var missingGroupReports = 0
         var nextGroupCheck = SystemClock.elapsedRealtime() + GROUP_CHECK_INTERVAL
@@ -192,32 +231,42 @@ class TetherService : Service() {
                     nextGroupCheck = SystemClock.elapsedRealtime() + GROUP_CHECK_INTERVAL
                 }
 
-                val network = boundUpstream(upstream)
-                if (upstream != ProxyUpstream.SYSTEM && network == null) {
+                val network = upstream.active()
+                val usb = if (config.mode == Mode.USB_PROXY) withContext(Dispatchers.IO) { Net.usbTetherAddress() } else null
+                val listen = groupAddress ?: usb?.let { InetAddress.getByName(it.address) }
+                val waitingFor = when {
+                    config.mode == Mode.USB_PROXY && usb == null -> "the Android USB tethering link"
+                    upstream.kind != ProxyUpstream.SYSTEM && network == null -> upstream.kind.transport?.label
+                    else -> null
+                }
+                if (waitingFor != null) {
                     withContext(Dispatchers.IO) { proxy?.close() }
                     proxy = null
                     boundNetwork = null
+                    boundAddress = null
                     reportedRunning = false
-                    showReconnecting("Waiting for ${upstream.transport?.label}. Client traffic is paused.")
+                    showReconnecting("Waiting for $waitingFor. Client traffic is paused.")
                 } else {
-                    if (!reportedRunning || network != boundNetwork) {
+                    if (!reportedRunning || network != boundNetwork || listen != boundAddress) {
                         withContext(Dispatchers.IO) { proxy?.close() }
-                        proxy = if (config.proxyRuns) createProxy(config, stats, network, groupAddress) else null
+                        proxy = if (config.proxyRuns) createProxy(config, stats, network, listen) else null
                         withContext(Dispatchers.IO) { proxy?.server?.start() }
-                        val addresses = if (groupAddress != null) {
-                            listOf(IpCandidate("Wi-Fi Direct", groupAddress.hostAddress.orEmpty(), false))
-                        } else withContext(Dispatchers.IO) {
-                            Net.candidateAddresses()
+                        val addresses = when {
+                            groupAddress != null -> listOf(IpCandidate("Wi-Fi Direct", groupAddress.hostAddress.orEmpty(), false))
+                            usb != null -> listOf(usb.copy(iface = "USB", looksLikeAccessPoint = false))
+                            else -> withContext(Dispatchers.IO) { Net.candidateAddresses() }
                         }
-                        TetherState.set(Status.Running(config, hotspot, addresses, System.currentTimeMillis()))
+                        TetherState.set(Status.Running(config, hotspot, addresses, System.currentTimeMillis(), upstream.kind.transport?.label))
                         boundNetwork = network
+                        boundAddress = listen
                         reportedRunning = true
                     }
                     val counters = stats.snapshot()
                     TetherState.publish(counters)
-                    val route = upstream.transport?.let { "${it.label} · " }.orEmpty()
+                    val route = upstream.kind.transport?.let { "${it.label} · " }.orEmpty()
                     updateNotification("$route↑ ${Net.humanBytes(counters.bytesUp)}  ↓ ${Net.humanBytes(counters.bytesDown)} · ${counters.activeConnections} conn")
                 }
+                publishClients(stats)
                 delay(minOf(1_000L, timeLeft(deadline)))
             }
             return false
@@ -236,6 +285,17 @@ class TetherService : Service() {
         return ActiveProxy(ProxyServer(
             config.port, credentials, stats, dns = dns ?: systemDns,
             openUpstreamSocket = sockets::createSocket, listenAddress = listenAddress,
+            openUpstreamDatagram = {
+                val datagram = DatagramSocket()
+                try {
+                    network?.bindSocket(datagram)
+                    datagram
+                } catch (e: Exception) {
+                    datagram.close()
+                    throw e
+                }
+            },
+            idleTimeoutMs = config.proxyIdleTimeout.millis,
         ), dns)
     }
 
@@ -243,13 +303,6 @@ class TetherService : Service() {
         fun close() {
             try { server.stop() } finally { dns?.close() }
         }
-    }
-
-    private fun boundUpstream(upstream: ProxyUpstream): Network? {
-        if (upstream == ProxyUpstream.SYSTEM) return null
-        val network = connectivity.activeNetwork ?: return null
-        val transport = connectivity.getNetworkCapabilities(network).toUpstreamTransport()
-        return network.takeIf { upstream.accepts(transport) }
     }
 
     private fun showReconnecting(message: String) {
@@ -260,9 +313,17 @@ class TetherService : Service() {
         }
     }
 
+    private fun publishClients(stats: Stats) {
+        val snapshots = stats.clients.snapshots()
+        if (restartable) recovery.saveClients(snapshots)
+        TetherState.publishClients(snapshots)
+    }
+
     private fun timeLeft(deadline: Long) = (deadline - SystemClock.elapsedRealtime()).coerceAtLeast(0L)
 
     private fun requestStop() {
+        restartable = false
+        recovery.clear()
         val current = session
         if (current == null) {
             stopSelf()
@@ -278,6 +339,8 @@ class TetherService : Service() {
         destroyed = true
         scope.cancel()
         if (session != null) {
+            TetherState.setClientEditor(null)
+            TetherState.publishClients(emptyList())
             TetherState.publish(StatsSnapshot())
             TetherState.set(Status.Idle)
         }

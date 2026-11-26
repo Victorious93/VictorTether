@@ -24,6 +24,10 @@ enum class Mode(val label: String, val blurb: String) {
         "Proxy only",
         "Runs just the proxy on whatever hotspot/Wi-Fi/USB link you already have up."
     ),
+    USB_PROXY(
+        "USB tethering",
+        "Run an authenticated proxy on the USB network created by Android’s USB tethering setting."
+    ),
 }
 
 /** What runs the stealth helper. Shizuku avoids needing root. */
@@ -34,6 +38,21 @@ enum class ProxyDnsMode(val label: String) {
     ADGUARD("AdGuard ad blocking"),
     CUSTOM_HTTPS("Custom DNS over HTTPS"),
 }
+
+enum class UpstreamPreference(val label: String) {
+    AUTOMATIC("Automatic"), ACTIVE("Active network"), WIFI("Wi-Fi"), CELLULAR("Mobile data"),
+}
+
+enum class DirectBand(val label: String, val minimumSdk: Int = 30) {
+    AUTO("Automatic"), BAND_2_4("2.4 GHz"), BAND_5("5 GHz"), BAND_6("6 GHz", 36),
+}
+
+enum class ProxyIdleTimeout(val label: String, val millis: Int) {
+    SHORT("3 seconds", 3_000), TEN_SECONDS("10 seconds", 10_000), THIRTY_SECONDS("30 seconds", 30_000),
+    MINUTE("1 minute", 60_000), FIVE_MINUTES("5 minutes", 300_000), UNLIMITED("No idle timeout", 0),
+}
+
+enum class ThemeMode(val label: String) { DARK("Dark"), LIGHT("Light"), SYSTEM("Follow system") }
 
 data class Config(
     val mode: Mode = Mode.PROXY_LOCAL,
@@ -50,6 +69,15 @@ data class Config(
     val proxyDnsMode: ProxyDnsMode = ProxyDnsMode.SYSTEM,
     val proxyDnsUrl: String = "",
     val requireProxyVpn: Boolean = false,
+    val upstreamPreference: UpstreamPreference = UpstreamPreference.AUTOMATIC,
+    val directBand: DirectBand = DirectBand.AUTO,
+    val proxyIdleTimeout: ProxyIdleTimeout = ProxyIdleTimeout.FIVE_MINUTES,
+    val holdCpuAwake: Boolean = true,
+    val keepScreenOn: Boolean = false,
+    val resumeAfterKill: Boolean = false,
+    val themeMode: ThemeMode = ThemeMode.DARK,
+    val dynamicColors: Boolean = false,
+    val haptics: Boolean = false,
 ) {
     /** Human-readable problems that would stop the session from starting. Empty = OK. */
     fun validate(): List<String> = buildList {
@@ -70,7 +98,7 @@ data class Config(
     }
 
     /** Proxy-only sessions and shared VPN access both require a client login. */
-    val proxyAuthForced: Boolean get() = mode == Mode.PROXY_ONLY || requireProxyVpn
+    val proxyAuthForced: Boolean get() = mode == Mode.PROXY_ONLY || mode == Mode.USB_PROXY || requireProxyVpn
 
     val authRequired: Boolean get() = requireProxyAuth || proxyAuthForced
 
@@ -112,6 +140,15 @@ class ConfigStore(context: Context) {
             proxyDnsMode = ProxyDnsMode.entries.firstOrNull { it.name == savedDnsMode } ?: d.proxyDnsMode,
             proxyDnsUrl = sp.getString("proxyDnsUrl", d.proxyDnsUrl) ?: d.proxyDnsUrl,
             requireProxyVpn = sp.getBoolean("requireProxyVpn", d.requireProxyVpn),
+            upstreamPreference = UpstreamPreference.entries.firstOrNull { it.name == sp.getString("upstreamPreference", null) } ?: d.upstreamPreference,
+            directBand = DirectBand.entries.firstOrNull { it.name == sp.getString("directBand", null) } ?: d.directBand,
+            proxyIdleTimeout = ProxyIdleTimeout.entries.firstOrNull { it.name == sp.getString("proxyIdleTimeout", null) } ?: d.proxyIdleTimeout,
+            holdCpuAwake = sp.getBoolean("holdCpuAwake", d.holdCpuAwake),
+            keepScreenOn = sp.getBoolean("keepScreenOn", d.keepScreenOn),
+            resumeAfterKill = sp.getBoolean("resumeAfterKill", d.resumeAfterKill),
+            themeMode = ThemeMode.entries.firstOrNull { it.name == sp.getString("themeMode", null) } ?: d.themeMode,
+            dynamicColors = sp.getBoolean("dynamicColors", d.dynamicColors),
+            haptics = sp.getBoolean("haptics", d.haptics),
         )
         // Persist generated secrets so they stay stable between launches.
         if (!sp.contains("password") || !sp.contains("proxyPass")) save(cfg)
@@ -127,6 +164,15 @@ class ConfigStore(context: Context) {
             .putInt("autoStop", c.autoStopMinutes)
             .putString("proxyDnsMode", c.proxyDnsMode.name).putString("proxyDnsUrl", c.proxyDnsUrl)
             .putBoolean("requireProxyVpn", c.requireProxyVpn)
+            .putString("upstreamPreference", c.upstreamPreference.name)
+            .putString("directBand", c.directBand.name)
+            .putString("proxyIdleTimeout", c.proxyIdleTimeout.name)
+            .putBoolean("holdCpuAwake", c.holdCpuAwake)
+            .putBoolean("keepScreenOn", c.keepScreenOn)
+            .putBoolean("resumeAfterKill", c.resumeAfterKill)
+            .putString("themeMode", c.themeMode.name)
+            .putBoolean("dynamicColors", c.dynamicColors)
+            .putBoolean("haptics", c.haptics)
             .apply()
     }
 

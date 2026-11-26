@@ -6,9 +6,12 @@ import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pDevice
 import android.net.wifi.p2p.WifiP2pGroup
 import android.net.wifi.p2p.WifiP2pManager
+import android.os.Build
 import android.os.Looper
 import com.victorious.tether.data.Config
+import com.victorious.tether.data.DirectBand
 import com.victorious.tether.data.HotspotInfo
+import com.victorious.tether.service.fingerprint
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -65,22 +68,32 @@ class WifiDirect(private val context: Context) {
     }
 
     /** Creates the group; if the requested name/passphrase is rejected, lets Android choose. */
-    suspend fun createGroup(name: String?, passphrase: String?) {
+    suspend fun createGroup(name: String, passphrase: String, band: DirectBand) {
         val m = manager ?: throw HotspotException("Wi-Fi Direct is not supported on this phone")
         val ch = channel()
+        if (Build.VERSION.SDK_INT < band.minimumSdk) throw HotspotException("${band.label} Wi-Fi Direct requires a newer Android version.")
+        val operatingBand = when (band) {
+            DirectBand.AUTO -> WifiP2pConfig.GROUP_OWNER_BAND_AUTO
+            DirectBand.BAND_2_4 -> WifiP2pConfig.GROUP_OWNER_BAND_2GHZ
+            DirectBand.BAND_5 -> WifiP2pConfig.GROUP_OWNER_BAND_5GHZ
+            // WifiP2pConfig.GROUP_OWNER_BAND_6GHZ, introduced in API 36 (compileSdk 35).
+            DirectBand.BAND_6 -> 3
+        }
         val cfg = runCatching {
-            if (name != null && passphrase != null) {
-                WifiP2pConfig.Builder()
-                    .setNetworkName(name)
-                    .setPassphrase(passphrase)
-                    .enablePersistentMode(false)
-                    .build()
-            } else null
+            WifiP2pConfig.Builder()
+                .setNetworkName(name)
+                .setPassphrase(passphrase)
+                .setGroupOperatingBand(operatingBand)
+                .enablePersistentMode(false)
+                .build()
         }.getOrNull()
 
-        // A null config means no custom name was requested, so go straight to the system default.
         val customFailure: Int? = if (cfg != null) action { m.createGroup(ch, cfg, it) } else NO_CONFIG
         if (customFailure != null) {
+            if (band != DirectBand.AUTO) {
+                val detail = if (customFailure == NO_CONFIG) "configuration rejected" else reason(customFailure)
+                throw HotspotException("Android could not start Wi-Fi Direct on ${band.label} ($detail). Try Automatic.")
+            }
             // OEMs often reject custom names; fall back so the user still gets a working group.
             val fallback = action { m.createGroup(ch, it) }
             if (fallback != null) throw HotspotException("Wi-Fi Direct could not create a group: ${reason(fallback)}")
@@ -178,25 +191,32 @@ class WifiDirect(private val context: Context) {
 }
 
 /** Owns a Wi-Fi Direct group for proxy clients. */
-class WifiDirectBackend(context: Context) : HotspotBackend {
+class WifiDirectBackend(context: Context, private val previousGroupKey: String? = null) : HotspotBackend {
     private val direct = WifiDirect(context)
     private var ownsGroup = false
     private var groupName: String? = null
 
     override suspend fun start(config: Config): HotspotInfo {
-        val available = withTimeoutOrNull(3_000) { direct.groupInfo() == null }
+        val existing = withTimeoutOrNull(3_000) { ExistingGroup(direct.groupInfo()) }
             ?: throw HotspotException("Android did not report the Wi-Fi Direct group state.")
-        if (!available) throw HotspotException("A Wi-Fi Direct group is already active. Close it before starting VictorTether.")
-        withContext(NonCancellable) {
-            val accepted = withTimeoutOrNull(6_000) {
-                direct.createGroup(WifiDirect.networkNameFor(config.ssid), config.password)
-                true
-            } ?: false
-            if (!accepted) throw HotspotException("Android did not respond to the Wi-Fi Direct group request.")
+        val group = if (existing.group != null) {
+            if (!matchesRecoveredGroup(existing.group)) {
+                throw HotspotException("A Wi-Fi Direct group is already active. Close it before starting VictorTether.")
+            }
             ownsGroup = true
+            existing.group
+        } else {
+            withContext(NonCancellable) {
+                val accepted = withTimeoutOrNull(6_000) {
+                    direct.createGroup(WifiDirect.networkNameFor(config.ssid), config.password, config.directBand)
+                    true
+                } ?: false
+                if (!accepted) throw HotspotException("Android did not respond to the Wi-Fi Direct group request.")
+                ownsGroup = true
+            }
+            withTimeoutOrNull(12_000) { direct.awaitGroup() }
+                ?: throw HotspotException("Android could not bring up the Wi-Fi Direct group.")
         }
-        val group = withTimeoutOrNull(12_000) { direct.awaitGroup() }
-            ?: throw HotspotException("Android could not bring up the Wi-Fi Direct group.")
         groupName = group.networkName
         if (group.passphrase.isBlank()) throw HotspotException("Android did not provide the Wi-Fi Direct group password.")
         val address = withTimeoutOrNull(4_000) {
@@ -217,9 +237,12 @@ class WifiDirectBackend(context: Context) : HotspotBackend {
 
     override suspend fun stop() {
         try {
-            if (ownsGroup) withTimeoutOrNull(4_000) {
-                val name = groupName
-                if (name == null || groupIsActive(name) == true) direct.removeGroup()
+            if (ownsGroup || previousGroupKey != null) withTimeoutOrNull(4_000) {
+                val group = direct.groupInfo()
+                val ours = if (ownsGroup) (groupName == null && group == null) ||
+                    (group?.isOwner == true && (groupName == null || group.networkName == groupName))
+                    else matchesRecoveredGroup(group)
+                if (ours) direct.removeGroup()
             }
         } finally {
             ownsGroup = false
@@ -227,4 +250,11 @@ class WifiDirectBackend(context: Context) : HotspotBackend {
             direct.close()
         }
     }
+
+    private fun matchesRecoveredGroup(group: DirectGroup?) = previousGroupKey != null && group?.isOwner == true &&
+        previousGroupKey == directGroupKey(group.networkName, group.passphrase)
+
+    private data class ExistingGroup(val group: DirectGroup?)
 }
+
+internal fun directGroupKey(name: String, passphrase: String) = fingerprint("${name.length}:$name$passphrase")

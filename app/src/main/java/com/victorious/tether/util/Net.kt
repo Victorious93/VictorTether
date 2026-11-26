@@ -6,6 +6,11 @@ import java.net.NetworkInterface
 
 object Net {
     private val AP_PREFIXES = listOf("ap", "swlan", "softap", "wlan1", "wlan2", "rndis", "p2p", "bt-pan")
+    private val USB_PREFIXES = listOf("rndis", "usb", "ncm")
+
+    fun usbTetherAddress(): IpCandidate? = candidateAddresses().firstOrNull { candidate ->
+        USB_PREFIXES.any { candidate.iface.startsWith(it, ignoreCase = true) }
+    }
 
     /**
      * Private IPv4 addresses on this device. Android exposes no public API for "the hotspot

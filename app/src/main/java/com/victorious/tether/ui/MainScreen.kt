@@ -49,10 +49,13 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.victorious.tether.R
+import com.victorious.tether.BuildConfig
 import com.victorious.tether.data.Config
 import com.victorious.tether.data.Mode
 import com.victorious.tether.data.StatsSnapshot
 import com.victorious.tether.data.Status
+import com.victorious.tether.proxy.ClientPolicy
+import com.victorious.tether.proxy.ProxyClientSnapshot
 import com.victorious.tether.util.Net
 import com.victorious.tether.util.Qr
 import com.victorious.tether.util.Severity
@@ -60,7 +63,7 @@ import com.victorious.tether.util.Upstream
 import com.victorious.tether.util.UpstreamInfo
 
 private enum class Screen(val title: String) {
-    CONNECT("Connect"), SETTINGS("Settings"), TOOLS("Tools"),
+    CONNECT("Connect"), CLIENTS("Clients"), SETTINGS("Settings"), TOOLS("Tools"),
 }
 
 @Composable
@@ -68,12 +71,17 @@ fun MainScreen(
     config: Config,
     status: Status,
     stats: StatsSnapshot,
+    clients: List<ProxyClientSnapshot>,
     upstream: UpstreamInfo,
     hasWifiPermission: Boolean,
     onNeedWifiPermission: () -> Unit,
     onConfig: (Config) -> Unit,
     onToggle: () -> Unit,
     onOpenSystemHotspot: () -> Unit,
+    onOpenBatterySettings: () -> Unit,
+    onOpenReleases: () -> Unit,
+    onClientPolicy: (String, ClientPolicy) -> Unit,
+    onCopyText: (String) -> Unit,
     onOpenMesh: (() -> Unit)? = null,
 ) {
     var screen by rememberSaveable { mutableStateOf(Screen.CONNECT) }
@@ -119,6 +127,10 @@ fun MainScreen(
     ) { insets ->
         screenState.SaveableStateProvider(screen.name) {
             Box(Modifier.fillMaxSize().padding(insets), contentAlignment = Alignment.TopCenter) {
+                if (screen == Screen.CLIENTS) {
+                    ClientsPage(clients, locked && config.proxyRuns, onClientPolicy, Modifier.widthIn(max = 680.dp))
+                    return@Box
+                }
                 Column(
                     Modifier.widthIn(max = 680.dp).fillMaxWidth().verticalScroll(rememberScrollState())
                         .padding(horizontal = 18.dp, vertical = 18.dp),
@@ -128,7 +140,7 @@ fun MainScreen(
                         Screen.CONNECT -> {
                             ConnectionCard(config, status, upstream, onToggle)
                             if (status is Status.Running) {
-                                ActiveConnectionDetails(status, stats)
+                                ActiveConnectionDetails(status, stats, onCopyText)
                             } else {
                                 Panel("Connection mode") {
                                     Text(config.mode.label, style = MaterialTheme.typography.titleMedium)
@@ -145,7 +157,8 @@ fun MainScreen(
                                 }
                             }
                         }
-                        Screen.SETTINGS -> SettingsPanels(config, locked, onConfig, onOpenMesh)
+                        Screen.CLIENTS -> Unit
+                        Screen.SETTINGS -> SettingsPanels(config, locked, onConfig, onOpenMesh, onOpenBatterySettings, onOpenSystemHotspot)
                         Screen.TOOLS -> {
                             Panel("Upstream connection") {
                                 if (upstream.validated) InfoLine("Network", upstream.transport.label)
@@ -160,10 +173,28 @@ fun MainScreen(
                                 }
                             }
                             WifiDirectToolsPanel(upstream, hasWifiPermission, onNeedWifiPermission, locked)
-                            if (config.mode == Mode.PROXY_ONLY) {
+                            if (config.mode == Mode.PROXY_ONLY || config.mode == Mode.USB_PROXY) {
                                 OutlinedButton(onClick = onOpenSystemHotspot, modifier = Modifier.fillMaxWidth()) {
                                     Text("Open Android wireless settings")
                                 }
+                            }
+                            Panel("Client setup") {
+                                SupportingText("Join the shared Wi-Fi or USB network. Use the address and port on Connect in the client’s manual HTTP proxy settings.")
+                                SupportingText("For UDP, configure an app that supports SOCKS5 UDP ASSOCIATE. Use SOCKS5 or HTTP on sessions that require a login.")
+                                TextButton(onClick = {
+                                    val state = when (status) {
+                                        Status.Idle -> "Idle"
+                                        Status.Starting -> "Starting"
+                                        Status.Stopping -> "Stopping"
+                                        is Status.Reconnecting -> "Reconnecting"
+                                        is Status.Running -> "Running"
+                                        is Status.Failed -> "Failed"
+                                    }
+                                    onCopyText("VictorTether ${BuildConfig.VERSION_NAME}\nMode: ${config.mode.label}\nSession: $state\nUpstream: ${upstream.transport.label}\nNetwork validated: ${upstream.validated}\nProxy DNS: ${config.proxyDnsMode.label}")
+                                }) { Text("Copy session diagnostics") }
+                            }
+                            Panel("VictorTether ${BuildConfig.VERSION_NAME}") {
+                                TextButton(onClick = onOpenReleases) { Text("View releases") }
                             }
                         }
                     }
@@ -216,6 +247,8 @@ private fun ConnectionCard(config: Config, status: Status, upstream: UpstreamInf
             InfoLine("Upstream", upstream.transport.label)
             if (config.proxyRuns && config.requireProxyVpn) {
                 InfoLine("Proxy route", if (status is Status.Running) "Bound to VPN" else "VPN required")
+            } else if (status is Status.Running && status.proxyRoute != null) {
+                InfoLine("Proxy route", status.proxyRoute)
             }
             Button(
                 onClick = onToggle,
@@ -232,7 +265,7 @@ private fun ConnectionCard(config: Config, status: Status, upstream: UpstreamInf
 }
 
 @Composable
-private fun ActiveConnectionDetails(status: Status.Running, stats: StatsSnapshot) {
+private fun ActiveConnectionDetails(status: Status.Running, stats: StatsSnapshot, onCopyText: (String) -> Unit) {
     val colors = MaterialTheme.colorScheme
     Panel("Traffic") {
         InfoLine("Connections", "${stats.activeConnections} active / ${stats.totalConnections} total")
@@ -263,7 +296,7 @@ private fun ActiveConnectionDetails(status: Status.Running, stats: StatsSnapshot
     if (status.config.proxyRuns) {
         var showLogin by remember(status.startedAtMillis) { mutableStateOf(false) }
         Panel("Proxy address") {
-            SupportingText("Use HTTP or SOCKS5 on your client device.")
+            SupportingText("Use this endpoint for HTTP or SOCKS5. SOCKS5 clients can also relay UDP.")
             if (status.addresses.isEmpty()) SupportingText("Port ${status.config.port}. No private IPv4 address found yet.")
             status.addresses.forEach { candidate ->
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -274,6 +307,9 @@ private fun ActiveConnectionDetails(status: Status.Running, stats: StatsSnapshot
                     )
                     SupportingText(candidate.iface + if (candidate.looksLikeAccessPoint) " · likely hotspot" else "")
                 }
+            }
+            status.addresses.firstOrNull()?.let { address ->
+                TextButton(onClick = { onCopyText("${address.address}:${status.config.port}") }) { Text("Copy proxy address") }
             }
             if (status.config.authRequired) {
                 TextButton(onClick = { showLogin = !showLogin }) {

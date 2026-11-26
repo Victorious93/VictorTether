@@ -25,18 +25,20 @@
 
 | | |
 |---|---|
-| **Proxy tether, no root** | Starts Android's LocalOnlyHotspot and serves an HTTP / CONNECT / SOCKS5 proxy on one port. |
+| **Proxy tether, no root** | Starts Android’s LocalOnlyHotspot and serves HTTP, SOCKS4a and SOCKS5 on one port, with UDP relay for SOCKS5 clients. |
 | **Stealth mode (root or Shizuku)** | Brings up a real WPA2 hotspot where *you* choose the SSID and password, and can **hide the SSID**. Uses root, or Shizuku so no root is needed. |
 | **Wi-Fi Direct** | Share your existing Wi-Fi through a password-protected Wi-Fi Direct group and proxy. Requires a phone that supports both Wi-Fi links at once. Android advertises the `DIRECT-…` group name. |
 | **Proxy only** | Runs just the proxy on a hotspot, Wi-Fi or USB link you already have. Login is forced. |
+| **USB tethering** | Listens on the Android USB tethering interface and resumes the proxy when the USB link returns. Login is required. |
+| **Client controls** | View per-IP usage and last activity, assign a nickname, block access, or set bandwidth and transfer limits. |
 | **Upstream check** | Shows whether you are sharing Wi-Fi, mobile data or Ethernet, and warns *before* you start if your phone cannot keep Wi-Fi on while running a hotspot. |
 | **Proxy DNS** | Choose Android’s system resolver, AdGuard DNS ad blocking, or a custom DNS-over-HTTPS endpoint. |
 | **VPN sharing** | Share the phone’s active VPN with authenticated HTTP and SOCKS5 clients. Open Victorious Mesh from the proxy panel when it is installed. |
 | **Join by QR** | The Wi-Fi QR code carries the hidden-network flag, so a phone can scan its way onto a hidden SSID. |
-| **Quality of life** | Foreground service, Quick Settings tile, live traffic counters, auto-stop timer, generated passwords. |
+| **Session controls** | Foreground service, Quick Settings tile, proxy idle timeout, auto-stop timer, CPU wake lock and optional screen-on and session recovery settings. |
 | **Clean** | No ads, no billing, no analytics. `allowBackup` off. |
 
-> JVM tests cover proxy connections, DNS settings and upstream selection. CI runs the tests and builds the debug APK. Physical-device verification is pending for Wi-Fi Direct sharing, hotspot start-up, the root and Shizuku helpers, the tile, and the notification. See [GUIDE.md](GUIDE.md) §1 and §4.
+> JVM tests cover TCP and UDP proxying, client quotas, DNS settings and upstream selection. CI runs the tests and builds the debug APK. Physical-device verification is pending for Wi-Fi Direct, USB tethering, live VPN routing, and the root and Shizuku helpers. See [GUIDE.md](GUIDE.md).
 
 ## Pick a mode
 
@@ -46,6 +48,7 @@
 | **Wi-Fi Direct** | no | `DIRECT-…`, cannot hide | partly | set an HTTP or SOCKS5 proxy to `ip:port` |
 | **Stealth · root / Shizuku** | root _or_ Shizuku | **hidden** | yes | normal tethering (NAT), proxy optional |
 | **Proxy only** | no | n/a | n/a | you supply the link; proxy login required |
+| **USB tethering** | no | n/a | n/a | enable Android USB tethering and configure an authenticated proxy on the client |
 
 ### Hidden SSIDs in Stealth mode
 
@@ -69,6 +72,17 @@ Open **Tools** for upstream checks and Wi-Fi Direct discovery.
 3. Leave **Auto-stop** at `0` for a session without a timer. If upstream Wi-Fi drops, the proxy pauses and resumes when Wi-Fi returns. If Android removes the Direct group, VictorTether makes up to three attempts to recreate it. Check **Connect** for new credentials if Android assigns a different group.
 
 Android's public Wi-Fi Direct configuration has no hidden-SSID setting. The Shizuku helper controls the separate Stealth hotspot mode.
+
+### Choose a route and manage clients
+
+- Under **Settings → Proxy**, choose **Automatic**, **Active network**, **Wi-Fi**, or **Mobile data**. With Wi-Fi or Mobile data selected, proxy traffic waits for that network when it’s unavailable. **Share VPN with proxy clients** takes priority.
+- In **Clients**, tap **Manage client** after a device uses the proxy. A block closes its live TCP tunnels and UDP associations. The rate limit and transfer limit cover uploads and downloads together. The values apply to the client's IP for this session.
+- Use the same **Proxy address** for HTTP, SOCKS4a, or SOCKS5. SOCKS4a is available for sessions with proxy login off. For UDP, use a client with SOCKS5 UDP ASSOCIATE support. Android’s manual Wi-Fi HTTP proxy setting handles HTTP and HTTPS traffic.
+- For **USB tethering**, connect a USB data cable, enable Android USB tethering, then start VictorTether in USB mode. Configure the displayed proxy endpoint on the client to use VictorTether’s routing, DNS and client controls.
+
+### Keep a session running
+
+**Settings → Session** includes the timer, CPU wake lock, the optional screen-on setting, and a link to Android battery settings. **Restore session after Android restarts the service** lets Android resume an interrupted proxy or Wi-Fi Direct session with its original route and auto-stop deadline. Client rules resume with their latest saved counters. Android handles restart timing. Stop, force-stop and reboot end the session. For Wi-Fi Direct, select 2.4 GHz or 5 GHz if supported. An option for 6 GHz is available on Android 16 or newer and requires compatible hardware.
 
 ### Custom DNS and ad blocking
 
@@ -106,7 +120,7 @@ TetherService (foreground)
    ├─ HotspotBackend ─┬─ LocalOnlyBackend   public WifiManager API
    │                  ├─ RootBackend ─su─►  SoftApMain (uid 0) ──┐
    │                  └─ ShizukuBackend ─►  SoftApUserService ───┴─► SoftApControl
-   ├─ ProxyServer     one port: 0x05 → SOCKS5, otherwise HTTP
+   ├─ ProxyServer     HTTP, SOCKS4a, SOCKS5 TCP and UDP on one proxy entry point
    └─ TetherState     StateFlow ──► UI and Quick Settings tile
 ```
 
@@ -114,7 +128,7 @@ TetherService (foreground)
 
 - Serves only private, link-local and loopback **sources**. It is never an open internet proxy.
 - Refuses **destinations** that resolve to loopback, wildcard or multicast, so clients cannot reach services on the phone.
-- Proxy login is compared in constant time and is forced in Proxy-only mode.
+- Proxy login is compared in constant time and is required for Proxy only, USB tethering and shared VPN sessions.
 - Passwords come from `SecureRandom`. Root-helper arguments are base64-encoded, so no user text reaches a shell.
 - Deliberately **not** included: TTL or packet rewriting and other carrier-detection evasion. Check your plan's tethering terms yourself.
 
@@ -122,9 +136,9 @@ TetherService (foreground)
 
 - [ ] On-device verification of every path (see GUIDE.md §1)
 - [ ] Verify the Shizuku backend on a device (code is in; shell-user permissions unconfirmed)
-- [ ] Pin upstream traffic to cellular or Wi-Fi
-- [ ] Connected-client list and per-connection log
-- [ ] SOCKS5 UDP ASSOCIATE
+- [x] Pin upstream traffic to cellular or Wi-Fi
+- [x] Connected proxy client list and access controls
+- [x] SOCKS5 UDP ASSOCIATE
 - [ ] Release signing and reproducible-build notes
 
 ## Documentation

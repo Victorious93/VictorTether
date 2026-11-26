@@ -2,6 +2,7 @@ package com.victorious.tether
 
 import com.victorious.tether.data.Config
 import com.victorious.tether.data.Mode
+import com.victorious.tether.data.UpstreamPreference
 import com.victorious.tether.service.ProxyUpstream
 import com.victorious.tether.util.Transport
 import org.junit.Assert.assertEquals
@@ -34,5 +35,14 @@ class ProxyUpstreamTest {
         val binding = ProxyUpstream.forSession(Config(mode = Mode.WIFI_DIRECT), Transport.CELLULAR)
 
         assertEquals(ProxyUpstream.SYSTEM, binding)
+    }
+
+    @Test fun requestedCellularStaysCellularWhileWifiIsActive() {
+        val config = Config(mode = Mode.WIFI_DIRECT, upstreamPreference = UpstreamPreference.CELLULAR)
+        val binding = ProxyUpstream.forSession(config, Transport.WIFI)
+        assertEquals(ProxyUpstream.CELLULAR, binding)
+        assertFalse(binding.accepts(Transport.WIFI))
+        assertTrue(binding.accepts(Transport.CELLULAR))
+        assertEquals(ProxyUpstream.VPN, ProxyUpstream.forSession(config.copy(requireProxyVpn = true), Transport.VPN))
     }
 }
